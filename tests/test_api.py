@@ -1,9 +1,12 @@
 """Tests for sentinel.api."""
 
+import fakeredis
 import pytest
 from fastapi.testclient import TestClient
 
+import sentinel.api
 from sentinel.api import app
+from sentinel.store import RedisCardStore
 from sentinel.train import MODELS_DIR
 
 # The trained model is not on GitHub (too big), so skip if it's missing.
@@ -27,7 +30,8 @@ PAYMENT = {
 
 def test_health():
     with TestClient(app) as client:
-        assert client.get("/health").json() == {"status": "ok"}
+        body = client.get("/health").json()
+    assert body == {"status": "ok", "store": "InMemoryCardStore"}
 
 
 def test_score_returns_a_valid_decision():
@@ -55,3 +59,28 @@ def test_rejects_missing_card_id():
     bad = {k: v for k, v in PAYMENT.items() if k != "card_id"}
     with TestClient(app) as client:
         assert client.post("/score", json=bad).status_code == 422
+
+def test_uses_redis_and_history_survives_restart(monkeypatch):
+    server = fakeredis.FakeServer()
+    monkeypatch.setattr(
+        sentinel.api, "make_store", lambda: RedisCardStore(fakeredis.FakeRedis(server=server))
+    )
+    with TestClient(app) as client:  # first API process
+        assert client.get("/health").json()["store"] == "RedisCardStore"
+        client.post("/score", json={**PAYMENT, "card_id": 99})
+    with TestClient(app) as client:  # restarted API process, same Redis
+        client.post("/score", json={**PAYMENT, "card_id": 99, "ts": "2020-12-21T21:10:00"})
+    stats = fakeredis.FakeRedis(server=server).hgetall("card:99:stats")
+    assert stats[b"n"] == b"2"  # both payments remembered across the restart
+
+
+def test_health_reports_redis_down(monkeypatch):
+    class BrokenStore:
+        def ping(self):
+            raise ConnectionError("Redis is down")
+
+    monkeypatch.setattr(sentinel.api, "make_store", BrokenStore)
+    with TestClient(app) as client:
+        response = client.get("/health")
+    assert response.status_code == 503
+    assert response.json()["status"] == "degraded"

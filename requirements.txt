@@ -20,3 +20,10 @@ scikit-learn
 fastapi
 uvicorn
 httpx2
+
+# Card memory (feature store)
+redis
+
+# Testing without a real Redis server
+fakeredis
+lupa
