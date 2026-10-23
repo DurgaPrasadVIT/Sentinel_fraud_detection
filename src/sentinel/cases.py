@@ -122,6 +122,10 @@ def main() -> None:
     writer = make_writer()
     store = CaseStore()
     service = CaseService(store, writer)
+    # Create the topics we read before subscribing. Services start in any order (e.g. in
+    # docker compose); a consumer that subscribes to a topic that doesn't exist yet only
+    # notices it minutes later, and with "latest" it has missed everything sent meanwhile.
+    ensure_topic(args.bootstrap, DECISIONS_TOPIC)
     ensure_topic(args.bootstrap, "ring-alerts", partitions=1)
     consumer = Consumer({
         "bootstrap.servers": args.bootstrap, "group.id": "sentinel-cases",

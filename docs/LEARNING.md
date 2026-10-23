@@ -508,6 +508,13 @@ image, so Docker created it **owned by root**, and `sentinel` couldn't write the
 runs the image like compose does (non-root, fresh volume) and opens the database, so this can't
 come back unnoticed. Lesson: building an image isn't testing it; run it the way production does.
 
+### Second bug on the first real run: services starting in a different order
+The dashboard opened but showed 0 payments. In docker compose all services start together; the
+case service subscribed to `decisions` **before the API had created the topic**. A Kafka consumer
+only re-checks for new topics every few minutes, and with `auto.offset.reset=latest` it skipped
+everything sent meanwhile. Fix: every consumer creates the topics it reads before subscribing.
+Lesson: distributed services must not depend on start-up order.
+
 ### Run everything with Docker
 ```
 docker compose --profile app up -d --build
