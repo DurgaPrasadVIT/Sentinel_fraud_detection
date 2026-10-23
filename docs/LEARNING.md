@@ -500,6 +500,14 @@ picks the command. Details:
   SQLite's WAL mode shares memory between processes, which is unreliable across containers on
   Windows folder mounts.
 
+### Bug found on the first real run: volume permissions
+The dashboard showed `sqlite3.OperationalError: unable to open database file`. Containers run as
+the non-root user `sentinel`, but the folder the `cases` volume is mounted on didn't exist in the
+image, so Docker created it **owned by root**, and `sentinel` couldn't write there. Fix: create
+`/app/cases` in the Dockerfile, owned by `sentinel` (a new volume copies that ownership). CI now
+runs the image like compose does (non-root, fresh volume) and opens the database, so this can't
+come back unnoticed. Lesson: building an image isn't testing it; run it the way production does.
+
 ### Run everything with Docker
 ```
 docker compose --profile app up -d --build
