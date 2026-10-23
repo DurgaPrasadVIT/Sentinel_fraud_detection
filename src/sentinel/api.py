@@ -172,6 +172,7 @@ def score(payment: Payment) -> Decision:
     state["events"].publish({
         **payment.model_dump(exclude={"txn_id"}),
         **result.model_dump(),
+        "score": fraud_score,  # full precision for monitoring (the response shows it rounded)
         "clues": json_safe(clues),  # what the model saw: for case notes and drift checks
         "scored_at": utc_now(),
     })

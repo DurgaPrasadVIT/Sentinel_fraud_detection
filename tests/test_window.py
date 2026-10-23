@@ -41,3 +41,10 @@ def test_snapshot_does_not_include_current_payment():
     count, total = w.snapshot(now)   # clues first...
     w.add(now, 99.0)                 # ...then add the new payment
     assert (count, total) == (1, 10.0)
+
+
+def test_empty_window_total_is_exactly_zero_after_many_payments():
+    w = SlidingWindow(ONE_HOUR)
+    for i, amount in enumerate([0.1, 0.2, 0.3, 19.99, 7.07, 123.45] * 50):
+        w.add(T0 + timedelta(seconds=i), amount)
+    assert w.snapshot(T0 + timedelta(days=1)) == (0, 0.0)  # not 1e-13
