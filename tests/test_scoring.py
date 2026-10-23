@@ -15,7 +15,7 @@ from sentinel.scoring import Scorer, top_reasons
 from sentinel.train import FEATURES, MODELS_DIR
 
 HISTORY = ["count_1h", "count_24h", "count_7d", "sum_1h", "sum_24h", "sum_7d",
-           "amount_vs_avg", "secs_since_last"]
+           "amount_vs_avg", "secs_since_last", "speed_kmh"]
 
 needs_model_and_data = pytest.mark.skipif(
     not (MODELS_DIR / "fraud_lgbm.txt").exists() or not (FEATURES_DIR / "test.parquet").exists(),

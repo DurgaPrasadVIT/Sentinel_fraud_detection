@@ -16,3 +16,16 @@ def test_money_lost():
     amount = np.array([100.0, 50.0, 70.0, 10.0])
     # Missed a $100 fraud + blocked one good customer + one review.
     assert money_lost(decisions, is_fraud, amount) == 100 + COST_FALSE_BLOCK + COST_REVIEW
+
+def test_policy_is_saved_and_loaded_with_its_model(tmp_path):
+    import pytest
+
+    model = tmp_path / "model.txt"
+    model.write_text("model version 1")
+    path = tmp_path / "policy.json"
+    Policy(0.02, 0.85).save(path, model)
+    assert Policy.load(path, model) == Policy(0.02, 0.85)
+
+    model.write_text("model version 2")  # retrained, but lines not re-chosen
+    with pytest.raises(ValueError, match="different model"):
+        Policy.load(path, model)

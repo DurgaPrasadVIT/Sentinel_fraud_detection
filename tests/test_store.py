@@ -20,7 +20,8 @@ def random_payments(n: int = 400, seed: int = 0):
     ts = datetime(2020, 1, 1)
     for _ in range(n):
         ts += timedelta(seconds=rng.choice([0, 30, 600, 3600, 3 * 86400, 9 * 86400]))
-        yield rng.choice([1, 2, 3]), ts, round(rng.uniform(1, 1000), 2)
+        lat, lon = rng.uniform(25, 48), rng.uniform(-123, -70)  # somewhere in the US
+        yield rng.choice([1, 2, 3]), ts, round(rng.uniform(1, 1000), 2), lat, lon
 
 
 def same(a, b) -> bool:
@@ -36,9 +37,9 @@ def redis_store():
 
 def test_redis_matches_training_features(redis_store):
     memory = InMemoryCardStore()  # wraps CardState, the training logic
-    for card, ts, amount in random_payments():
-        expected = memory.features_and_update(card, ts, amount)
-        got = redis_store.features_and_update(card, ts, amount)
+    for card, ts, amount, lat, lon in random_payments():
+        expected = memory.features_and_update(card, ts, amount, lat, lon)
+        got = redis_store.features_and_update(card, ts, amount, lat, lon)
         assert expected.keys() == got.keys()
         for key in expected:
             assert same(expected[key], got[key]), (key, expected[key], got[key])

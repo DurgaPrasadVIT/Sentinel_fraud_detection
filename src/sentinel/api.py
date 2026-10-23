@@ -27,7 +27,6 @@ from sentinel.explain import load_model
 from sentinel.scoring import Scorer
 from sentinel.store import make_store
 
-POLICY = Policy(review_line=0.02, block_line=0.69)
 LABELS = {APPROVE: "approve", REVIEW: "review", BLOCK: "block"}
 
 # The 14 shop categories the model was trained on. Anything else is rejected
@@ -100,6 +99,7 @@ state = {}
 async def lifespan(app: FastAPI):
     """Runs once when the server starts: load the model and connect to card memory."""
     state["scorer"] = Scorer(load_model(), CATEGORIES)
+    state["policy"] = Policy.load()  # approve/review/block lines chosen for THIS model
     state["cards"] = make_store()
     state["events"] = make_publisher()
     yield
@@ -127,12 +127,14 @@ def score(payment: Payment) -> Decision:
     start = time.perf_counter()
     row = payment.model_dump()
     # Clues from the card's past, then remember this payment (one atomic step in Redis).
-    history = state["cards"].features_and_update(payment.card_id, payment.ts, payment.amount)
+    history = state["cards"].features_and_update(
+        payment.card_id, payment.ts, payment.amount, payment.merch_lat, payment.merch_lon
+    )
 
     scorer = state["scorer"]
     x = scorer.vector(row, history)
     fraud_score = scorer.score(x)
-    decision = int(POLICY.decide(np.array([fraud_score]))[0])
+    decision = int(state["policy"].decide(np.array([fraud_score]))[0])
     reasons = [] if decision == APPROVE else scorer.reasons(x)
 
     result = Decision(

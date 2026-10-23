@@ -22,7 +22,7 @@ FEATURES = [
     "amount", "age", "city_pop", "category",
     "count_1h", "count_24h", "count_7d",
     "sum_1h", "sum_24h", "sum_7d",
-    "amount_vs_avg", "secs_since_last",
+    "amount_vs_avg", "secs_since_last", "speed_kmh",
     "hour", "day_of_week", "is_night", "distance_km",
 ]
 

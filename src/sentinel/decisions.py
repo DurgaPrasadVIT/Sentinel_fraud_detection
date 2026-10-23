@@ -4,7 +4,10 @@ Run from the project root:
     python -m sentinel.decisions
 """
 
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import lightgbm as lgb
 import numpy as np
@@ -20,6 +23,14 @@ MAX_REVIEWS_PER_DAY = 50  # what the review team can handle
 
 APPROVE, REVIEW, BLOCK = 0, 1, 2
 
+MODEL_PATH = MODELS_DIR / "fraud_lgbm.txt"
+POLICY_PATH = MODELS_DIR / "policy.json"
+
+
+def file_fingerprint(path: Path) -> str:
+    """Short SHA-256 of a file: changes whenever the file changes."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
 
 @dataclass
 class Policy:
@@ -34,6 +45,28 @@ class Policy:
             scores >= self.block_line, BLOCK,
             np.where(scores >= self.review_line, REVIEW, APPROVE),
         )
+
+    def save(self, path: Path = POLICY_PATH, model_path: Path = MODEL_PATH) -> None:
+        """Save the lines together with a fingerprint of the model they were chosen for."""
+        data = {**asdict(self), "model_fingerprint": file_fingerprint(model_path)}
+        path.write_text(json.dumps(data, indent=2) + "\n")
+
+    @classmethod
+    def load(cls, path: Path = POLICY_PATH, model_path: Path = MODEL_PATH) -> "Policy":
+        """Load the lines, and refuse if they were chosen for a different model.
+
+        Lines tuned for one model are wrong for another (scores shift after retraining).
+        Failing loudly at startup is better than silently blocking the wrong customers.
+        """
+        if not path.exists():
+            raise FileNotFoundError(f"{path} not found: run `python -m sentinel.decisions`")
+        data = json.loads(path.read_text())
+        if data["model_fingerprint"] != file_fingerprint(model_path):
+            raise ValueError(
+                f"{path} was chosen for a different model. "
+                "Run `python -m sentinel.decisions` after every retrain."
+            )
+        return cls(review_line=data["review_line"], block_line=data["block_line"])
 
 
 def money_lost(decisions: np.ndarray, is_fraud: np.ndarray, amount: np.ndarray) -> float:
@@ -76,7 +109,7 @@ def summarize(name: str, decisions, is_fraud, amount, n_days: int) -> None:
 
 
 def main() -> None:
-    booster = lgb.Booster(model_file=str(MODELS_DIR / "fraud_lgbm.txt"))
+    booster = lgb.Booster(model_file=str(MODEL_PATH))
     _, valid = split_by_time(pd.read_parquet(FEATURES_DIR / "train.parquet"), VALID_START)
     test = pd.read_parquet(FEATURES_DIR / "test.parquet")
 
@@ -90,6 +123,8 @@ def main() -> None:
     policy = find_best_policy(v_scores, v_fraud, v_amount, v_days)
     print(f"Best policy (chosen on valid): review >= {policy.review_line:.2f}, "
           f"block >= {policy.block_line:.2f}")
+    policy.save()
+    print(f"Saved to {POLICY_PATH} (the API loads it with the model)")
 
     # 2. Check it on TEST, and compare with simpler options.
     t_scores, t_fraud, t_amount, t_days = prepare(test)
