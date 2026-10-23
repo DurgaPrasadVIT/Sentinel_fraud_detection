@@ -62,10 +62,34 @@ def test_dollar_signs_are_not_read_as_math():
 
 
 def test_page_renders(tmp_path, monkeypatch):
+    import streamlit as st
     from streamlit.testing.v1 import AppTest
 
+    st.cache_resource.clear()
     monkeypatch.chdir(tmp_path)  # empty database: page must still load
     at = AppTest.from_file(str(__import__("sentinel.dashboard", fromlist=["x"]).__file__), default_timeout=30)
     at.run()
     assert not at.exception
     assert at.title[0].value == "Sentinel: fraud operations"
+
+
+def test_queue_appears_without_reloading_the_page(tmp_path, monkeypatch):
+    """Cases created after the page loaded must show up on the next refresh."""
+    import streamlit as st
+    from streamlit.testing.v1 import AppTest
+
+    import sentinel.dashboard as dash
+
+    st.cache_resource.clear()  # the db connection is cached per process; start clean
+    monkeypatch.chdir(tmp_path)
+    at = AppTest.from_file(dash.__file__, default_timeout=30)
+    at.run()
+    assert len(at.expander) == 0  # nothing yet
+
+    store = CaseStore(tmp_path / "data" / "cases.db")
+    service = CaseService(store, TemplateWriter())
+    service.handle("decisions", event(1, "block", 0.99))
+    service.flush(wait=True)
+
+    at.run()  # what the 10 s timer triggers
+    assert len(at.expander) == 1 and "BLOCK" in at.expander[0].label
