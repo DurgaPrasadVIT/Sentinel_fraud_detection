@@ -27,3 +27,6 @@ redis
 # Testing without a real Redis server
 fakeredis
 lupa
+
+# Event streaming
+confluent-kafka

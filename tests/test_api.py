@@ -120,3 +120,29 @@ def test_utc_and_other_timezones_mean_the_same_moment():
 def test_api_categories_match_the_model():
     """If the model is retrained with new categories, this reminds us to update the API."""
     assert CATEGORIES == load_model().pandas_categorical[0]
+
+
+def test_every_decision_is_published_once(monkeypatch):
+    published = []
+
+    class ListPublisher:
+        def publish(self, event):
+            published.append(event)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(sentinel.api, "make_publisher", ListPublisher)
+    with TestClient(app) as client:
+        body = client.post("/score", json={**PAYMENT, "txn_id": "abc-1"}).json()
+    assert body["txn_id"] == "abc-1"
+    assert len(published) == 1
+    assert published[0]["txn_id"] == "abc-1"
+    assert published[0]["decision"] == body["decision"]
+    assert published[0]["card_id"] == PAYMENT["card_id"]
+
+
+def test_txn_id_is_created_when_missing():
+    with TestClient(app) as client:
+        body = client.post("/score", json=PAYMENT).json()
+    assert len(body["txn_id"]) == 32

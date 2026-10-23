@@ -6,9 +6,13 @@ Then open http://127.0.0.1:8000/docs
 
 Card memory: set REDIS_URL (e.g. redis://localhost:6379/0) to keep it in Redis.
 Without it, memory lives inside this process and is lost on restart.
+
+Decision events: set KAFKA_BOOTSTRAP (e.g. localhost:9092) to publish every
+decision to the "decisions" topic. Without it, events are not published.
 """
 
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Literal, get_args
@@ -19,6 +23,7 @@ from fastapi import FastAPI, Response
 from pydantic import BaseModel, Field, field_validator
 
 from sentinel.decisions import APPROVE, BLOCK, REVIEW, Policy
+from sentinel.events import make_publisher, utc_now
 from sentinel.explain import explain, load_model
 from sentinel.features import add_simple_features
 from sentinel.store import make_store
@@ -55,6 +60,7 @@ class Payment(BaseModel):
 
     model_config = {"json_schema_extra": {"examples": [EXAMPLE_PAYMENT]}}
 
+    txn_id: str | None = Field(default=None, max_length=64)  # created by us if missing
     card_id: int
     ts: datetime
     amount: float = Field(gt=0)
@@ -82,6 +88,7 @@ class Payment(BaseModel):
 class Decision(BaseModel):
     """What we send back."""
 
+    txn_id: str
     score: float
     decision: str
     reasons: list[str]
@@ -96,7 +103,9 @@ async def lifespan(app: FastAPI):
     """Runs once when the server starts: load the model and connect to card memory."""
     state["model"] = load_model()
     state["cards"] = make_store()
+    state["events"] = make_publisher()
     yield
+    state["events"].close()  # send any events still waiting in the queue
 
 
 app = FastAPI(title="Sentinel fraud scoring", lifespan=lifespan)
@@ -130,9 +139,17 @@ def score(payment: Payment) -> Decision:
     decision = int(POLICY.decide(np.array([fraud_score]))[0])
     reasons = [] if decision == APPROVE else [name for name, _ in explain(model, df)[0]]
 
-    return Decision(
+    result = Decision(
+        txn_id=payment.txn_id or uuid.uuid4().hex,
         score=round(fraud_score, 4),
         decision=LABELS[decision],
         reasons=reasons,
         latency_ms=round((time.perf_counter() - start) * 1000, 2),
     )
+    # Copy of the decision for everything downstream. Non-blocking.
+    state["events"].publish({
+        **payment.model_dump(exclude={"txn_id"}),
+        **result.model_dump(),
+        "scored_at": utc_now(),
+    })
+    return result
