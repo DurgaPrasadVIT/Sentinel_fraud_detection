@@ -264,3 +264,26 @@ def write_note(event: dict, writer: Writer) -> Note:
     if problems:
         return Note(template_note(facts), "template", problems)
     return Note(text, writer.name, [])
+
+
+SAMPLE_EVENT = {
+    "txn_id": "sample", "card_id": 4532015112830366, "ts": "2020-12-21T23:51:00",
+    "amount": 850.0, "category": "shopping_net", "decision": "block", "score": 0.9731,
+    "reasons": ["sum_24h", "amount_vs_avg", "is_night"],
+    "clues": {"sum_24h": 1765.0, "amount_vs_avg": 12.34, "is_night": 1},
+}
+
+
+def main() -> None:
+    """Try the configured writer on one sample case:  python -m sentinel.casenotes"""
+    writer = make_writer()
+    print(f"Writer: {writer.name}\nFacts given to it:")
+    print("  " + "\n  ".join(Facts.from_event(SAMPLE_EVENT).lines()))
+    note = write_note(SAMPLE_EVENT, writer)
+    print(f"\nNote (by {note.source}):\n{note.text}")
+    if note.rejected:
+        print(f"\nLLM note was NOT used, because: {note.rejected}")
+
+
+if __name__ == "__main__":
+    main()

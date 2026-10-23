@@ -392,9 +392,15 @@ it looks risky, what to do next. Example (template writer, real output):
 - **SQLite with WAL** so the dashboard can read while the service writes. PostgreSQL in
   production; the code would barely change.
 
+### Try a writer on one sample case
+```
+python -m sentinel.casenotes                  # shows the facts, the note, and why an LLM note was rejected
+```
+
 ### Run it
 ```
 python -m sentinel.cases                      # template notes
+$env:SENTINEL_LLM = "anthropic"; $env:ANTHROPIC_API_KEY = "<your key>"; python -m sentinel.cases   # Claude
 $env:SENTINEL_LLM = "ollama"; python -m sentinel.cases   # local LLM (install Ollama, `ollama pull llama3.1:8b`)
 ```
 
