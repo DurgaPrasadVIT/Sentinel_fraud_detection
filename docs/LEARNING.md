@@ -132,3 +132,81 @@ the slowest requests are the ones customers complain about.
 1. What happens if a client sends a category your model has never seen?
 2. How do you handle timezones in a payments system? *(Store UTC everywhere.)*
 3. Why do you report p99 latency instead of the average?
+
+---
+
+## Event streaming with Kafka (`events.py`, `simulator.py`, `monitor.py`)
+
+### Where Kafka sits, and why there
+```
+card network (simulator) --HTTP--> scoring API --answer--> card network
+                                        |
+                                        +--copy of decision--> Kafka "decisions" topic
+                                                                  |
+                                       monitor / case notes / ring detector / training data
+```
+The shop is **waiting** for approve/block, so scoring is a direct HTTP call (like a
+phone call). Everything that can happen later (dashboards, case notes, fraud-ring
+detection, saving data for retraining) reads a **copy** of the decision from Kafka
+(like a letter in a mailbox). The shop never waits for those slow jobs.
+
+Putting Kafka *in front* of the API would force the shop to wait for an answer that
+is sitting in a queue. That fits checks where nobody is waiting (e.g. AML pattern
+analysis over hours), not card authorisation.
+
+### Key design choices
+- **Key = card id.** Kafka sends every event with the same key to the same partition,
+  in order. So every consumer sees one card's story in the right sequence.
+- **6 partitions.** Up to 6 copies of a consumer (same `group.id`) can share the work.
+- **Non-blocking publish.** `produce()` only puts the event in a local queue; a
+  background thread sends it. If Kafka is slow or down, the queue fills and we **drop
+  the copy, never the payment** (`BufferError` is caught and counted).
+- **`acks=all` + idempotence.** Kafka confirms the event is safely stored, and retries
+  never create duplicates.
+- **`flush()` on shutdown.** Events still in the queue get up to 5 seconds to be sent.
+- **Consumer groups remember their position.** Stop the monitor and start it again:
+  it continues where it stopped.
+
+### The simulator (the "card network")
+- Replays real payments from the test period, in time order, into the API.
+- **Token bucket** limits the rate (DSA): a bucket of tokens refills at `rate` per
+  second; each payment takes one; empty bucket = wait. Allows small bursts.
+- **One card always goes through the same worker thread** (`card_id % workers`), so
+  a card's payments arrive in order and its Redis history stays correct.
+- **Warm-up** (`--warmup-days`): first replays a few days to build card history.
+  Without it every card starts "brand new" and scores look worse than reality
+  (the cold-start problem).
+- **`--attack`** injects a stolen-card pattern every 500 payments: two big online
+  purchases, then four tiny gas payments to test if the card still works.
+
+### First end-to-end results (3,000 payments after 3 days warm-up, 1 API process)
+- Fraud stopped: **36 of 42** payments ($14,424 of $17,875)
+- Injected attack payments stopped: **25 of 30**. Every attack was stopped by its
+  2nd payment at the latest; what got through was mostly the *first* $850 purchase on
+  cards whose owners normally spend a lot. Fraud models catch **patterns**, and one
+  purchase isn't a pattern yet.
+- Throughput ~108 payments/s; client round-trip p50 70 ms, p99 130 ms. The API itself
+  takes ~10 ms per payment; the rest is **queueing** in a single Python process with
+  8 senders. Fixing that (more worker processes, faster model serving) is the
+  load-testing step.
+- Results are lower than the offline evaluation (98% of fraud money stopped) because
+  only 3 days of history were replayed. Offline, every card had its full history.
+
+### Run it yourself
+```
+docker compose up -d
+$env:REDIS_URL = "redis://localhost:6379/0"
+$env:KAFKA_BOOTSTRAP = "localhost:9092"
+uvicorn sentinel.api:app
+```
+Second terminal: `python -m sentinel.monitor`
+Third terminal: `python -m sentinel.simulator --rate 50 --limit 3000 --warmup-days 3 --attack`
+
+### Likely interview questions
+1. Why is Kafka after the API and not in front of it?
+2. How do you keep one card's events in order? *(Partition by card id.)*
+3. What happens to scoring if Kafka goes down? *(Nothing: publish is non-blocking;
+   we drop the copy and count it.)*
+4. At-least-once vs exactly-once: what do `acks=all` and idempotence give you?
+5. How does a consumer resume after a crash? *(Committed offsets per consumer group.)*
+6. Why did live results differ from offline results? *(Cold start: less card history.)*
