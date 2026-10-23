@@ -93,8 +93,8 @@ def find_best_policy(scores, is_fraud, amount, n_days: int) -> Policy:
     return best
 
 
-def summarize(name: str, decisions, is_fraud, amount, n_days: int) -> None:
-    """Print what a policy does, in business terms."""
+def summarize(name: str, decisions, is_fraud, amount, n_days: int) -> dict:
+    """Print what a policy does, in business terms, and return the numbers."""
     fraud_total = amount[is_fraud == 1].sum()
     stopped = amount[(decisions != APPROVE) & (is_fraud == 1)].sum()
     good_blocked = ((decisions == BLOCK) & (is_fraud == 0)).sum()
@@ -106,6 +106,13 @@ def summarize(name: str, decisions, is_fraud, amount, n_days: int) -> None:
     print(f"  Fraud money stopped: {stopped / fraud_total:.1%} of ${fraud_total:,.0f}")
     print(f"  Good customers blocked: {good_blocked:,}")
     print(f"  Total money lost: ${money_lost(decisions, is_fraud, amount):,.0f}")
+    return {
+        "money_lost": money_lost(decisions, is_fraud, amount),
+        "fraud_money_stopped_share": float(stopped / fraud_total),
+        "good_customers_blocked": int(good_blocked),
+        "reviews_per_day": float((decisions == REVIEW).sum() / n_days),
+        "block_rate": float(np.mean(decisions == BLOCK)),
+    }
 
 
 def main() -> None:
@@ -132,8 +139,27 @@ def main() -> None:
               np.full(len(t_scores), APPROVE), t_fraud, t_amount, t_days)
     summarize("Naive policy (block if score >= 0.5)",
               Policy(0.5, 0.5).decide(t_scores), t_fraud, t_amount, t_days)
-    summarize("Money-based policy",
-              policy.decide(t_scores), t_fraud, t_amount, t_days)
+    result = summarize("Money-based policy",
+                       policy.decide(t_scores), t_fraud, t_amount, t_days)
+    log_to_model_run(policy, result)
+
+
+def log_to_model_run(policy: Policy, result: dict) -> None:
+    """Add the policy and its business result to the MLflow run that trained this model."""
+    from sentinel.tracking import load_run_info, setup
+
+    info = load_run_info()
+    if info is None:
+        print("(no MLflow run for this model: skipped logging)")
+        return
+    mlflow = setup()
+    with mlflow.start_run(run_id=info["run_id"]):
+        mlflow.log_params({"review_line": policy.review_line, "block_line": policy.block_line,
+                           "cost_false_block": COST_FALSE_BLOCK, "cost_review": COST_REVIEW,
+                           "max_reviews_per_day": MAX_REVIEWS_PER_DAY})
+        mlflow.log_metrics({f"test_{k}": v for k, v in result.items()})
+        mlflow.log_artifact(str(POLICY_PATH))
+    print(f"Logged policy and business metrics to MLflow run {info['run_id'][:8]}")
 
 
 if __name__ == "__main__":
