@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Project data and model files (too big / private)
+/data/
+*.parquet
+/models/
