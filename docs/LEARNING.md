@@ -361,3 +361,46 @@ no coordinated timing beyond normal night-time fraud). So the simulator:
 4. Your detector found every ring but only 17% of the money was after the alert. How
    would you alert earlier, and what does it cost?
 5. Your data had no rings. How did you test a ring detector honestly?
+
+---
+
+## AI case notes (`casenotes.py`, `cases.py`)
+
+### What it does
+For every payment sent to review or blocked, analysts get a short note: what happened, why
+it looks risky, what to do next. Example (template writer, real output):
+> BLOCK (risk 100.0%): $326.94 grocery_pos on card ****5478 at 2020-06-22 01:25. Why: amount
+> $326.94; $4,822.58 spent on this card in the previous 24 hours; category grocery_pos.
+> Next step: Contact the cardholder; if they don't recognise it, close and reissue the card.
+
+### Design decisions
+- **Not on the payment path.** The case service reads decisions from Kafka. A slow or broken
+  LLM can't slow down or break payments. Notes are written on 4 background threads.
+- **Facts first, LLM second.** We turn the model's SHAP reasons + clue values into plain-English
+  facts ourselves. The LLM only rephrases them.
+- **Hallucination guard.** Every number in an LLM note must match a number in the facts
+  (rounding allowed). Invented numbers, long digit strings (possible card numbers), errors or
+  timeouts -> the template note is used, and the rejection reason is saved for review.
+- **Privacy.** The LLM only sees `****1234`. With Ollama, nothing leaves the machine at all.
+- **Fairness.** The model uses age and town size. Notes never cite them: "risky because the
+  cardholder is 61" invites biased decisions and describes the person, not the behaviour.
+  The model's use of age is a known issue for a fairness review (e.g. compare false-block
+  rates across age groups, try the model without it).
+- **Pluggable writers:** `SENTINEL_LLM=template` (default) | `ollama` | `anthropic` | `openai`.
+- **At-least-once + idempotent saves.** Kafka may re-deliver after a crash; `txn_id` primary
+  keys make duplicates harmless. The Kafka position is committed only after rows are saved.
+- **SQLite with WAL** so the dashboard can read while the service writes. PostgreSQL in
+  production; the code would barely change.
+
+### Run it
+```
+python -m sentinel.cases                      # template notes
+$env:SENTINEL_LLM = "ollama"; python -m sentinel.cases   # local LLM (install Ollama, `ollama pull llama3.1:8b`)
+```
+
+### Likely interview questions
+1. How do you stop an LLM from inventing facts in a regulated setting?
+2. Why is the LLM not called inside the scoring API?
+3. What happens if the LLM is down?
+4. Exactly-once vs at-least-once: how do you avoid duplicate cases?
+5. Your model uses age. What would you do about it?
