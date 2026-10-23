@@ -22,8 +22,11 @@ COPY pyproject.toml .
 COPY src ./src
 RUN pip install --no-deps .
 
-# Don't run as root.
-RUN useradd --create-home --uid 1000 sentinel && mkdir -p /app/data /app/models \
+# Don't run as root. Folders that get mounted must exist here, owned by this user:
+# a new Docker volume copies the ownership of the folder it's mounted on. Without
+# this, Docker creates /app/cases as root and the services can't write to it.
+RUN useradd --create-home --uid 1000 sentinel \
+    && mkdir -p /app/data /app/models /app/cases \
     && chown -R sentinel:sentinel /app
 USER sentinel
 

@@ -42,3 +42,10 @@ jobs:
         run: docker build -t sentinel:ci .
       - name: Smoke test (imports and CLI inside the image)
         run: docker run --rm sentinel:ci python -c "import sentinel.api, sentinel.cases, sentinel.rings, sentinel.dashboard; print('ok')"
+      # Runs like docker-compose: non-root user, fresh named volume. Catches
+      # "unable to open database file" permission problems.
+      - name: Smoke test (case database on a fresh volume)
+        run: |
+          docker volume create sentinel-ci-cases
+          docker run --rm -v sentinel-ci-cases:/app/cases -e SENTINEL_CASES_DB=/app/cases/cases.db sentinel:ci \
+            python -c "from sentinel.cases import CaseStore, CASES_DB; CaseStore(CASES_DB); print('case db ok:', CASES_DB)"
