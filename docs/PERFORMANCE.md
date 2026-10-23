@@ -65,3 +65,43 @@ uvicorn sentinel.api:app --log-level warning
 locust -f loadtest/locustfile.py --headless -u 50 -r 25 -t 30s --host http://127.0.0.1:8000
 ```
 Without `--headless`, open http://localhost:8089 for live charts.
+
+
+## Investigation: 48 ms round trips in Docker
+
+**Symptom.** With the full stack in Docker, the simulator saw ~48 ms per request, while the API
+reported only ~4.6 ms p99 of its own processing time.
+
+**Measure, don't guess.** `python -m sentinel.probe` sends sequential requests and splits the time:
+
+| (Docker, API with `--workers 2`) | p50 |
+|---|---|
+| API's own processing time | 1.3 ms |
+| Round trip, **reused** connection | **44.0 ms** |
+| Round trip, **new** connection each time | 3.8 ms |
+
+Reusing a connection was ~10x *slower* than opening a new one, the opposite of normal.
+
+**First guess was wrong.** Nagle's algorithm on the client? The HTTP client already sets
+`TCP_NODELAY` (checked its source). Ruled out.
+
+**Reproduced outside Docker** by changing one thing, the worker count:
+
+| uvicorn workers | Reused connection p50 |
+|---|---|
+| 1 | 1.4 ms |
+| 2 | 43.0 ms |
+
+**Root cause.** asyncio enables `TCP_NODELAY` on accepted connections only when the listening
+socket has `proto == IPPROTO_TCP`. With one worker, asyncio creates the socket (`proto = 6`). With
+several workers, uvicorn creates it itself with `proto = 0`, so `TCP_NODELAY` stays off. The server
+then holds back the second part of each response (Nagle's algorithm) until the client acknowledges
+the first, and the client delays that acknowledgement by ~40 ms ("delayed ACK"). New connections
+escape it because TCP acknowledges immediately at the start of a connection.
+
+**Fix.** One uvicorn process per container; scale with more containers (replicas). This is also the
+usual container practice: one process, one health check, the orchestrator handles scaling.
+
+**Lessons.** A *constant* extra delay (here ~40 ms whatever the load) points at protocol timing, not
+slow code. Splitting server time from round-trip time found where to look; changing one variable at
+a time found the cause.
