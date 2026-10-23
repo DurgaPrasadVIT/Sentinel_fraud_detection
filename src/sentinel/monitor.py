@@ -17,7 +17,7 @@ from collections import Counter, deque
 
 import numpy as np
 
-from sentinel.events import DECISIONS_TOPIC
+from sentinel.events import DECISIONS_TOPIC, ensure_topic
 
 
 class RollingStats:
@@ -81,6 +81,7 @@ def main() -> None:
         "group.id": args.group,
         "auto.offset.reset": "earliest" if args.from_start else "latest",
     })
+    ensure_topic(args.bootstrap, DECISIONS_TOPIC)  # services may start before the API creates it
     consumer.subscribe([DECISIONS_TOPIC])
     stats, last_print = RollingStats(), time.monotonic()
     print(f"Listening to '{DECISIONS_TOPIC}' on {args.bootstrap} (Ctrl + C to stop)...")
