@@ -29,6 +29,11 @@ from sentinel.store import make_store
 
 LABELS = {APPROVE: "approve", REVIEW: "review", BLOCK: "block"}
 
+# Rule next to the model: a device used by this many different cards in 30 days
+# is a typical sign of a fraud ring or money mules. Normal people use 1-2 devices,
+# and a household may share one between 2-3 cards.
+DEVICE_CARD_LIMIT = 5
+
 # The 14 shop categories the model was trained on. Anything else is rejected
 # with 422, instead of being silently scored as "unknown".
 Category = Literal[
@@ -39,6 +44,7 @@ Category = Literal[
 CATEGORIES = list(get_args(Category))
 
 EXAMPLE_PAYMENT = {
+    "device_id": "a1b2c3d4e5f6",
     "card_id": 4242,
     "ts": "2020-12-21T21:00:00",
     "amount": 25.0,
@@ -58,6 +64,7 @@ class Payment(BaseModel):
     model_config = {"json_schema_extra": {"examples": [EXAMPLE_PAYMENT]}}
 
     txn_id: str | None = Field(default=None, max_length=64)  # created by us if missing
+    device_id: str | None = Field(default=None, max_length=128)  # phone / browser fingerprint
     card_id: int
     ts: datetime
     amount: float = Field(gt=0)
@@ -136,6 +143,12 @@ def score(payment: Payment) -> Decision:
     fraud_score = scorer.score(x)
     decision = int(state["policy"].decide(np.array([fraud_score]))[0])
     reasons = [] if decision == APPROVE else scorer.reasons(x)
+
+    if payment.device_id:
+        n_cards = state["cards"].cards_on_device(payment.device_id, payment.card_id, payment.ts)
+        if n_cards >= DEVICE_CARD_LIMIT:
+            decision = max(decision, REVIEW)  # a person checks it; never auto-approve
+            reasons = [f"device_used_by_{n_cards}_cards", *reasons]
 
     result = Decision(
         txn_id=payment.txn_id or uuid.uuid4().hex,

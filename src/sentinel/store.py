@@ -21,6 +21,7 @@ import pandas as pd
 from sentinel.features import WINDOWS, CardState, travel_speed_kmh
 
 MAX_WINDOW_SECS = max(w.total_seconds() for w in WINDOWS.values())
+DEVICE_WINDOW_SECS = 30 * 24 * 3600  # "cards seen on this device in the last 30 days"
 KEY_TTL_SECS = 400 * 24 * 3600  # forget cards that are inactive for ~13 months
 
 
@@ -36,6 +37,18 @@ class InMemoryCardStore:
 
     def __init__(self) -> None:
         self.cards: defaultdict[int, CardState] = defaultdict(CardState)
+        self.devices: defaultdict[str, dict[int, float]] = defaultdict(dict)  # device -> card -> last seen
+
+    def cards_on_device(self, device_id: str, card_id: int, ts: datetime) -> int:
+        """Remember that this card used this device; return how many different
+        cards used it in the last 30 days (including this one)."""
+        now = to_epoch(ts)
+        seen = self.devices[device_id]
+        seen[card_id] = now
+        for card, last in list(seen.items()):
+            if last <= now - DEVICE_WINDOW_SECS:
+                del seen[card]
+        return len(seen)
 
     def features_and_update(self, card_id: int, ts: datetime, amount: float,
                             lat: float = np.nan, lon: float = np.nan) -> dict:
@@ -96,6 +109,18 @@ class RedisCardStore:
         self.redis = client
         self.prefix = prefix
         self._script = client.register_script(_LUA)
+
+    def cards_on_device(self, device_id: str, card_id: int, ts: datetime) -> int:
+        """Same as the in-memory version, in Redis: a sorted set per device,
+        member = card id, score = last time seen. One atomic transaction."""
+        now = to_epoch(ts)
+        key = f"device:{device_id}:cards"
+        pipe = self.redis.pipeline(transaction=True)
+        pipe.zadd(key, {str(card_id): now})
+        pipe.zremrangebyscore(key, "-inf", now - DEVICE_WINDOW_SECS)
+        pipe.zcard(key)
+        pipe.expire(key, int(DEVICE_WINDOW_SECS))
+        return int(pipe.execute()[2])
 
     def _keys(self, card_id: int) -> list[str]:
         return [f"{self.prefix}:{card_id}:recent", f"{self.prefix}:{card_id}:stats"]

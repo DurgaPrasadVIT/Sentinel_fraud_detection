@@ -146,3 +146,14 @@ def test_txn_id_is_created_when_missing():
     with TestClient(app) as client:
         body = client.post("/score", json=PAYMENT).json()
     assert len(body["txn_id"]) == 32
+
+
+def test_device_shared_by_many_cards_goes_to_review():
+    with TestClient(app) as client:
+        bodies = [
+            client.post("/score", json={**PAYMENT, "card_id": 500 + i, "device_id": "mule-phone"}).json()
+            for i in range(6)
+        ]
+    assert bodies[4]["decision"] in {"review", "block"}  # 5th different card on one device
+    assert bodies[4]["reasons"][0] == "device_used_by_5_cards"
+    assert bodies[3]["reasons"] == [] or not bodies[3]["reasons"][0].startswith("device_used")
