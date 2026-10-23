@@ -51,7 +51,8 @@ def describe(name: str, clues: dict) -> str | None:
         "count_1h": lambda: f"{v:.0f} earlier payments in the previous hour",
         "count_24h": lambda: f"{v:.0f} earlier payments in the previous 24 hours",
         "count_7d": lambda: f"{v:.0f} earlier payments in the previous 7 days",
-        "amount_vs_avg": lambda: f"amount is {v:.1f}x this card's average payment",
+        "amount_vs_avg": lambda: (f"amount is {v:.1f}x this card's average payment" if v >= 0.1
+                                  else "amount is under a tenth of this card's average payment"),
         "secs_since_last": lambda: f"{v / 60:.0f} minutes after the previous payment",
         "speed_kmh": lambda: f"would require travelling at {v:,.0f} km/h from the previous shop",
         "hour": lambda: f"made in the {v:02.0f}:00 hour",
@@ -113,25 +114,64 @@ def template_note(f: Facts) -> str:
 
 # ---------- Hallucination guard ----------
 
+_TIME = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+# Things we have NO data about. If a note mentions them, the LLM made them up.
+UNSUPPORTED_CLAIMS = re.compile(
+    r"\b(report(ed|s)?|chargebacks?|complain(t|ts|ed)|police|confirmed|admitted|"
+    r"previous fraud|known fraudster|blacklist(ed)?|ip address|vpn)\b", re.IGNORECASE)
+
+# Capitalised words a note may use. Any other capitalised word in the middle of a
+# sentence (a city, a shop, a person's name) is not in our facts.
+ALLOWED_CAPITALISED = {"Card", "Contact", "Confirm", "BLOCK", "REVIEW", "Block", "Review",
+                       "Next", "Why", "Reissue", "Close", "Verify", "Call", "PM", "AM"}
 
 
 def _numbers(text: str) -> list[float]:
     return [float(n.replace(",", "")) for n in _NUMBER.findall(text)]
 
 
+def _strip(pattern: re.Pattern, text: str) -> str:
+    return pattern.sub(" ", text)
+
+
 def check_note(note: str, facts: Facts) -> list[str]:
     """Problems with an LLM note. Empty list = OK.
 
-    Every number in the note must match a number in the facts (rounding allowed).
+    - every number must match a number in the facts (rounding allowed)
+    - times (HH:MM) and dates must match the facts exactly, as a whole
+    - no long digit strings (possible full card numbers)
+    - no claims about things we have no data for, no unknown names/places
     """
     problems = []
+    fact_text = "\n".join(facts.lines())
     if re.search(r"\d{8,}", note.replace(",", "")):
         problems.append("contains a long number (possible full card number)")
-    allowed = _numbers("\n".join(facts.lines())) + [1, 2, 3]
-    for n in _numbers(note):
+
+    fact_times = {(int(h), int(m)) for h, m in _TIME.findall(fact_text)}
+    for h, m in _TIME.findall(note):
+        if (int(h), int(m)) not in fact_times:
+            problems.append(f"time {h}:{m} is not in the facts")
+    fact_dates = set(_DATE.findall(fact_text))
+    for d in _DATE.findall(note):
+        if d not in fact_dates:
+            problems.append(f"date {d} is not in the facts")
+
+    # Remaining numbers: compare with the facts' numbers (times and dates removed on both sides).
+    allowed = _numbers(_strip(_TIME, _strip(_DATE, fact_text)))
+    for n in _numbers(_strip(_TIME, _strip(_DATE, note))):
         if not any(abs(n - a) <= max(0.51, 0.01 * abs(a)) for a in allowed):
             problems.append(f"number {n:g} is not in the facts")
+
+    if claim := UNSUPPORTED_CLAIMS.search(note):
+        problems.append(f"claims something we have no data for: '{claim.group(0)}'")
+    fact_words = set(re.findall(r"[A-Za-z_]+", fact_text))
+    for sentence in re.split(r"(?<=[.!?:;])\s+", note):
+        for word in re.findall(r"\b[A-Z][a-z]+\b", sentence)[1:]:  # skip the first word
+            if word not in ALLOWED_CAPITALISED and word not in fact_words:
+                problems.append(f"name or place '{word}' is not in the facts")
     if not note.strip():
         problems.append("empty note")
     return problems

@@ -381,6 +381,20 @@ it looks risky, what to do next. Example (template writer, real output):
 - **Hallucination guard.** Every number in an LLM note must match a number in the facts
   (rounding allowed). Invented numbers, long digit strings (possible card numbers), errors or
   timeouts -> the template note is used, and the rejection reason is saved for review.
+- **Evaluated with real LLM text** (`tests/test_note_guard_eval.py`): 8 notes written by an
+  LLM (Claude) from real cases, with natural rounding ("$2,081", "about 5 times"), must be
+  accepted (8/8); 10 realistic hallucinations must be rejected (10/10). The first version of
+  the guard **missed 4 of them**: a wrong time ("02:32" for 22:32, checked digit by digit), an
+  invented "2 previous chargebacks" (small numbers were always allowed), "in Paris", and
+  "already reported stolen". Fixed by checking times/dates as a whole, removing the
+  small-number loophole, rejecting unknown capitalised names, and rejecting claims about data
+  we don't have (reports, chargebacks, police...).
+- **Limit:** a word-level check can't catch every invented claim. Stronger options: structured
+  output (the LLM picks from given facts, code writes the numbers), or a second model that
+  verifies each sentence against the facts.
+- **Real API check:** the Anthropic writer was called against the real endpoint without a key:
+  401 Unauthorized -> template note, reason saved. This proves connectivity and the fallback,
+  not the request format (the server checks the key first).
 - **Privacy.** The LLM only sees `****1234`. With Ollama, nothing leaves the machine at all.
 - **Fairness.** The model uses age and town size. Notes never cite them: "risky because the
   cardholder is 61" invites biased decisions and describes the person, not the behaviour.
