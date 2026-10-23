@@ -1,0 +1,18 @@
+# Development: runtime + tests, lint, load testing and notebooks.
+#   python -m pip install -r requirements-dev.txt
+-r requirements.txt
+
+# Tests (fakeredis + lupa run Redis Lua scripts without a Redis server)
+pytest==9.1.1
+fakeredis==2.40.0
+lupa==2.8
+
+# Lint
+ruff==0.17.2
+
+# Load testing
+locust==2.47.0
+
+# Notebooks and charts
+ipykernel==7.4.0
+matplotlib==3.11.2

@@ -464,3 +464,52 @@ python -m sentinel.simulator --rate 50 --limit 5000 --warmup-days 3 --attack --r
 1. Why do analyst labels matter more than the model's own predictions for retraining?
 2. Why shouldn't the dashboard read from the scoring API directly?
 3. How would you measure analyst workload and false alarms from this data?
+
+---
+
+## CI and Docker (`.github/workflows/ci.yml`, `Dockerfile`, `docker-compose.yml`)
+
+### CI: every PR is checked automatically
+GitHub Actions runs on every pull request and push to `main`:
+1. install exact library versions (`requirements-dev.txt`)
+2. **lint** with ruff (unused imports, bugs like `zip()` silently dropping items, style)
+3. **tests**
+4. **build the Docker image** and import every service inside it
+
+**The problem we hit:** the dataset and trained model aren't in git, so in a clean CI machine
+**all 17 API tests were skipped**: CI would never test the API. Fix (`tests/conftest.py`): when
+no model exists, train a tiny stand-in model on random data (~1 s) before tests are collected.
+Result in a clean environment: **100 passed, 2 skipped** (the 2 need the real 1.85M-row data).
+
+### Pinned versions
+`requirements.txt` used to say just `pandas`. A new release could change behaviour silently, and
+CI, Docker and your laptop could each run different versions. Now every library has an exact
+version. Runtime libraries are in `requirements.txt` (what the Docker image needs); test, lint
+and notebook tools in `requirements-dev.txt`.
+
+### One image, many services
+The same image runs the API, case service, ring detector, dashboard and simulator; compose
+picks the command. Details:
+- **The model is not in the image.** `models/` is mounted at run time: a new model is deployed
+  without rebuilding code. (In a bigger setup, the API would pull it from a model registry.)
+- **Not root.** Containers run as user `sentinel`.
+- **Health check** on the API, so Docker (and later Kubernetes) knows when it's ready.
+- **Kafka has two listeners:** `localhost:9092` for your laptop, `kafka:19092` for containers.
+  With one, containers would be told to connect to "localhost" (themselves) and fail.
+- **The case database lives on a Docker volume**, shared by the case service and the dashboard.
+  SQLite's WAL mode shares memory between processes, which is unreliable across containers on
+  Windows folder mounts.
+
+### Run everything with Docker
+```
+docker compose --profile app up -d --build
+docker compose --profile demo run --rm simulator
+```
+API: http://localhost:8000/docs, dashboard: http://localhost:8501
+
+### Likely interview questions
+1. Why not put the model file in the Docker image?
+2. Your tests need a 300 MB dataset and a trained model. How do you test in CI?
+3. Why pin exact versions? What's the downside? *(Must update deliberately; use a bot like
+   Dependabot.)*
+4. Why does Kafka need two listeners in Docker?
