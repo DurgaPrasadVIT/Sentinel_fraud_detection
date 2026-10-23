@@ -143,23 +143,29 @@ def app() -> None:
 
     live()
 
-    st.subheader("Review queue (highest risk first)")
-    queue = review_queue(db)
-    if queue.empty:
-        st.caption("No open cases. Start the simulator and the case service.")
-    for case in queue.head(15).itertuples():
-        title = plain(f"{case.decision.upper()}  |  risk {case.score:.1%}  |  ${case.amount:,.2f} "
-                      f"{case.category}  |  card {case.card}  |  {case.ts}")
-        with st.expander(title):
-            st.markdown(plain(case.note))
-            st.caption(f"Model reasons: {case.reasons}  |  note by: {case.note_source}")
-            a, b, _ = st.columns([1, 1, 4])
-            if a.button("Confirm fraud", key=f"f-{case.txn_id}"):
-                set_status(db, case.txn_id, "confirmed_fraud")
-                st.rerun()
-            if b.button("Not fraud", key=f"n-{case.txn_id}"):
-                set_status(db, case.txn_id, "not_fraud")
-                st.rerun()
+    # Its own fragment: refreshes by itself (new cases appear without reloading the page),
+    # and less often than the numbers, so an analyst reading a note isn't interrupted.
+    @st.fragment(run_every="10s")
+    def queue_section() -> None:
+        st.subheader("Review queue (highest risk first)")
+        queue = review_queue(db)
+        if queue.empty:
+            st.caption("No open cases yet. They appear here automatically.")
+        for case in queue.head(15).itertuples():
+            title = plain(f"{case.decision.upper()}  |  risk {case.score:.1%}  |  ${case.amount:,.2f} "
+                          f"{case.category}  |  card {case.card}  |  {case.ts}")
+            with st.expander(title):
+                st.markdown(plain(case.note))
+                st.caption(f"Model reasons: {case.reasons}  |  note by: {case.note_source}")
+                a, b, _ = st.columns([1, 1, 4])
+                if a.button("Confirm fraud", key=f"f-{case.txn_id}"):
+                    set_status(db, case.txn_id, "confirmed_fraud")
+                    st.rerun(scope="fragment")
+                if b.button("Not fraud", key=f"n-{case.txn_id}"):
+                    set_status(db, case.txn_id, "not_fraud")
+                    st.rerun(scope="fragment")
+
+    queue_section()
 
 
 if __name__ == "__main__":
