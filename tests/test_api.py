@@ -5,7 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import sentinel.api
-from sentinel.api import app
+from sentinel.api import CATEGORIES, app
+from sentinel.explain import load_model
 from sentinel.store import RedisCardStore
 from sentinel.train import MODELS_DIR
 
@@ -84,3 +85,38 @@ def test_health_reports_redis_down(monkeypatch):
         response = client.get("/health")
     assert response.status_code == 503
     assert response.json()["status"] == "degraded"
+
+
+def test_rejects_unknown_category():
+    with TestClient(app) as client:
+        response = client.post("/score", json={**PAYMENT, "category": "electronic"})
+    assert response.status_code == 422
+
+
+def test_rejects_impossible_location():
+    with TestClient(app) as client:
+        response = client.post("/score", json={**PAYMENT, "cust_lat": 200})
+    assert response.status_code == 422
+
+
+def test_mixed_timezones_for_same_card_do_not_crash():
+    with TestClient(app) as client:
+        first = client.post("/score", json={**PAYMENT, "card_id": 77})
+        second = client.post(
+            "/score", json={**PAYMENT, "card_id": 77, "ts": "2020-12-21T21:05:00Z"}
+        )
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+
+def test_utc_and_other_timezones_mean_the_same_moment():
+    """21:00 in New York (UTC-5 in December) is 02:00 UTC the next day."""
+    from sentinel.api import Payment
+
+    ny = Payment(**{**PAYMENT, "ts": "2020-12-21T21:00:00-05:00"})
+    assert ny.ts.isoformat() == "2020-12-22T02:00:00"
+
+
+def test_api_categories_match_the_model():
+    """If the model is retrained with new categories, this reminds us to update the API."""
+    assert CATEGORIES == load_model().pandas_categorical[0]
