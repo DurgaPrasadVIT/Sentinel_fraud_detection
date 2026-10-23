@@ -1,0 +1,10 @@
+#Data handling
+pandas
+numpy
+pyarrow
+
+#Charts
+matplotlib
+
+# Run notebooks in VS Code
+ipykernel
