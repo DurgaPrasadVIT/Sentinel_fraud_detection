@@ -14,7 +14,7 @@ decision to the "decisions" topic. Without it, events are not published.
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal, get_args
 
 import numpy as np
@@ -85,7 +85,7 @@ class Payment(BaseModel):
         "2020-12-21T21:00:00" for the same card used to crash the API.
         """
         if ts.tzinfo is not None:
-            ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+            ts = ts.astimezone(UTC).replace(tzinfo=None)
         return ts
 
 

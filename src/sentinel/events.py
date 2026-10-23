@@ -14,7 +14,7 @@ Two publishers with the same interface:
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Protocol
 
 log = logging.getLogger(__name__)
@@ -111,4 +111,4 @@ def make_publisher() -> Publisher:
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)

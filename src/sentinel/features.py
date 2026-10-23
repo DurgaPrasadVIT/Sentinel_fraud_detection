@@ -99,7 +99,7 @@ def add_card_history(df: pd.DataFrame) -> pd.DataFrame:
     states = defaultdict(CardState)
     rows = []
     columns = [df["card_id"], df["ts"], df["amount"], df["merch_lat"], df["merch_lon"]]
-    for card, ts, amount, lat, lon in zip(*columns):
+    for card, ts, amount, lat, lon in zip(*columns, strict=True):
         state = states[card]
         rows.append(state.features(ts, amount, lat, lon))  # 1. clues from the past
         state.update(ts, amount, lat, lon)                 # 2. then remember this payment

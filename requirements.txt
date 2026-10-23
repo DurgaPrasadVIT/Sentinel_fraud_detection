@@ -1,38 +1,24 @@
-#Data handling
-pandas
-numpy
-pyarrow
+# Runtime: everything the services need (API, workers, dashboard, simulator).
+# Exact versions, so every machine (laptop, CI, Docker) runs the same code.
+# Dev and test tools are in requirements-dev.txt.
 
-#Charts
-matplotlib
+# Data
+pandas==3.1.0
+numpy==2.4.6
+pyarrow==26.0.0
 
-# Run notebooks in VS Code
-ipykernel
+# Model
+lightgbm==4.7.0
+scikit-learn==1.9.1
 
-# Testing
-pytest
+# API and HTTP clients
+fastapi==0.162.0
+uvicorn==0.54.0
+httpx2==2.16.0
 
-# Modeling
-lightgbm
-scikit-learn
-
-# API
-fastapi
-uvicorn
-httpx2
-
-# Card memory (feature store)
-redis
-
-# Testing without a real Redis server
-fakeredis
-lupa
-
-# Event streaming
-confluent-kafka
-
-# Load testing
-locust
+# Card memory and event streaming
+redis==8.1.0
+confluent-kafka==2.16.0
 
 # Dashboard
-streamlit
+streamlit==1.66.1

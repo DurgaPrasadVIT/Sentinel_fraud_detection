@@ -21,7 +21,7 @@ from pathlib import Path
 
 from sentinel.casenotes import Writer, make_writer, mask_card, write_note
 
-CASES_DB = Path("data/cases.db")
+CASES_DB = Path(os.getenv("SENTINEL_CASES_DB", "data/cases.db"))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS decisions (

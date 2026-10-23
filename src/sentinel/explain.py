@@ -34,7 +34,7 @@ def fmt(value) -> str:
 def print_cases(title: str, booster: lgb.Booster, cases: pd.DataFrame) -> None:
     """Print each payment with its top reasons."""
     print(f"\n=== {title} ===")
-    for (_, row), reasons in zip(cases.iterrows(), explain(booster, cases)):
+    for (_, row), reasons in zip(cases.iterrows(), explain(booster, cases), strict=True):
         print(f"\nScore {row['score']:.3f} | fraud={row['is_fraud']} | "
               f"${row['amount']:,.2f} {row['category']} at {row['ts']:%Y-%m-%d %H:%M}")
         for name, push in reasons:
