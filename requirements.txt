@@ -8,3 +8,6 @@ matplotlib
 
 # Run notebooks in VS Code
 ipykernel
+
+# Testing
+pytest
