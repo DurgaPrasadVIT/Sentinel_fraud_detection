@@ -33,3 +33,6 @@ confluent-kafka
 
 # Load testing
 locust
+
+# Dashboard
+streamlit

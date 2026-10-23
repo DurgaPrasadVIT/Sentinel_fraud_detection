@@ -404,3 +404,43 @@ $env:SENTINEL_LLM = "ollama"; python -m sentinel.cases   # local LLM (install Ol
 3. What happens if the LLM is down?
 4. Exactly-once vs at-least-once: how do you avoid duplicate cases?
 5. Your model uses age. What would you do about it?
+
+---
+
+## Live operations dashboard (`dashboard.py`)
+
+### What's on it
+- **Live numbers** (refresh every 3 s): payments scored, block / review share, money held for
+  checks, API p99 latency, open cases and ring alerts.
+- **Decisions per minute** chart.
+- **Ring alerts** from the graph detector (cards masked).
+- **Review queue**, highest risk first: each case shows its note, the model's reasons, and who
+  wrote the note (template or which LLM).
+- **Analyst buttons: "Confirm fraud" / "Not fraud".** These labels are the most valuable data
+  a fraud team has: they are how the model gets retrained on new fraud patterns
+  (human-in-the-loop). They also measure false alarms.
+
+### Design
+- The dashboard only **reads the case database**; it never talks to Kafka or the API, so a
+  busy dashboard can't affect payments.
+- Data functions (`summary`, `review_queue`, ...) are plain Python and unit-tested; the page
+  itself has a smoke test with Streamlit's `AppTest` (it caught a crash on a fresh machine
+  with no `data/` folder).
+- `st.fragment(run_every="3s")` refreshes only the live part of the page, not the whole app.
+- Streamlit was chosen because it's pure Python and fast to build. A bank would build the
+  analyst tool in a web framework (React etc.) on top of the same database/API.
+
+### Run the whole system
+```
+docker compose up -d
+uvicorn sentinel.api:app --log-level warning      # with REDIS_URL and KAFKA_BOOTSTRAP set
+python -m sentinel.rings
+python -m sentinel.cases
+streamlit run src/sentinel/dashboard.py
+python -m sentinel.simulator --rate 50 --limit 5000 --warmup-days 3 --attack --rings 5
+```
+
+### Likely interview questions
+1. Why do analyst labels matter more than the model's own predictions for retraining?
+2. Why shouldn't the dashboard read from the scoring API directly?
+3. How would you measure analyst workload and false alarms from this data?
