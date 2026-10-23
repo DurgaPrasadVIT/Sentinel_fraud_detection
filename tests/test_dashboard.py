@@ -1,0 +1,71 @@
+"""Tests for sentinel.dashboard (data functions and a smoke test of the page)."""
+
+import pytest
+
+from sentinel.casenotes import TemplateWriter
+from sentinel.cases import CaseService, CaseStore
+from sentinel.dashboard import label_stats, per_minute, review_queue, ring_alerts, set_status, summary
+
+
+def event(i, decision, score, amount=100.0):
+    return {"txn_id": f"t{i}", "card_id": 4000000000000000 + i, "ts": f"2020-12-21T21:{i:02d}:00",
+            "amount": amount, "category": "misc_net", "decision": decision, "score": score,
+            "latency_ms": float(i), "scored_at": f"2026-10-23T21:{i:02d}:00", "reasons": ["amount"],
+            "clues": {"amount": amount}}
+
+
+@pytest.fixture
+def db(tmp_path):
+    store = CaseStore(tmp_path / "cases.db")
+    service = CaseService(store, TemplateWriter())
+    for i, (decision, score) in enumerate([("approve", 0.01), ("approve", 0.02),
+                                            ("review", 0.4), ("block", 0.99)]):
+        service.handle("decisions", event(i, decision, score))
+    service.handle("ring-alerts", {"cards": ["1111", "2222"], "devices": ["device:a"],
+                                   "payments": 6, "amount": 600.0})
+    service.flush(wait=True)
+    return store.db
+
+
+def test_summary(db):
+    s = summary(db)
+    assert s["total"] == 4 and s["open_cases"] == 2 and s["rings"] == 1
+    assert s["share"] == {"approve": 0.5, "review": 0.25, "block": 0.25}
+    assert s["held_amount"] == 200.0
+
+
+def test_review_queue_is_highest_risk_first(db):
+    queue = review_queue(db)
+    assert list(queue["decision"]) == ["block", "review"]
+    assert queue.iloc[0]["note"].startswith("BLOCK")
+
+
+def test_labels_move_cases_out_of_the_queue(db):
+    set_status(db, "t3", "confirmed_fraud")
+    assert list(review_queue(db)["txn_id"]) == ["t2"]
+    assert label_stats(db) == {"Open": 1, "Confirmed fraud": 1}
+    with pytest.raises(ValueError):
+        set_status(db, "t2", "maybe")
+
+
+def test_per_minute_and_rings(db):
+    chart = per_minute(db)
+    assert chart.sum().sum() == 4 and chart.index[0] == "21:00"
+    ring = ring_alerts(db).iloc[0]
+    assert ring["devices"] == 1 and ring["n_cards"] == 2
+
+
+def test_dollar_signs_are_not_read_as_math():
+    from sentinel.dashboard import plain
+
+    assert plain("$13.63 then $2,093.49") == "\\$13.63 then \\$2,093.49"
+
+
+def test_page_renders(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.chdir(tmp_path)  # empty database: page must still load
+    at = AppTest.from_file(str(__import__("sentinel.dashboard", fromlist=["x"]).__file__), default_timeout=30)
+    at.run()
+    assert not at.exception
+    assert at.title[0].value == "Sentinel: fraud operations"

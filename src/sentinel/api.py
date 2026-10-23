@@ -102,6 +102,16 @@ class Decision(BaseModel):
 state = {}
 
 
+def json_safe(values: dict) -> dict:
+    """NaN is not valid JSON: send "no value yet" as null. Round long decimals."""
+    out = {}
+    for name, value in values.items():
+        if isinstance(value, float):
+            value = None if value != value else round(value, 4)
+        out[name] = value
+    return out
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Runs once when the server starts: load the model and connect to card memory."""
@@ -139,7 +149,8 @@ def score(payment: Payment) -> Decision:
     )
 
     scorer = state["scorer"]
-    x = scorer.vector(row, history)
+    clues = scorer.clues(row, history)
+    x = scorer.to_array(clues)
     fraud_score = scorer.score(x)
     decision = int(state["policy"].decide(np.array([fraud_score]))[0])
     reasons = [] if decision == APPROVE else scorer.reasons(x)
@@ -161,6 +172,7 @@ def score(payment: Payment) -> Decision:
     state["events"].publish({
         **payment.model_dump(exclude={"txn_id"}),
         **result.model_dump(),
+        "clues": json_safe(clues),  # what the model saw: for case notes and drift checks
         "scored_at": utc_now(),
     })
     return result

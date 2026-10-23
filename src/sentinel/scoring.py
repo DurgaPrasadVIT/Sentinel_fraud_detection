@@ -31,23 +31,30 @@ class Scorer:
         # LightGBM stores categories as numbers: their position in the training list.
         self.category_code = {name: i for i, name in enumerate(categories)}
 
-    def vector(self, payment: dict, history: dict) -> np.ndarray:
-        """All clues, in the exact column order the model was trained with."""
+    def clues(self, payment: dict, history: dict) -> dict:
+        """Every clue the model uses, by name (category kept as text, for people to read)."""
         ts = payment["ts"]
         hour = ts.hour
-        values = {
+        return {
             **history,
             "amount": payment["amount"],
             "age": payment["age"],
             "city_pop": payment["city_pop"],
-            "category": self.category_code[payment["category"]],
+            "category": payment["category"],
             "hour": hour,
             "day_of_week": ts.weekday(),
             "is_night": int(hour >= 22 or hour < 4),
             "distance_km": float(haversine_km(payment["cust_lat"], payment["cust_lon"],
                                               payment["merch_lat"], payment["merch_lon"])),
         }
+
+    def to_array(self, clues: dict) -> np.ndarray:
+        """Clues in the exact column order the model was trained with."""
+        values = {**clues, "category": self.category_code[clues["category"]]}
         return np.array([[values[name] for name in FEATURES]], dtype=np.float64)
+
+    def vector(self, payment: dict, history: dict) -> np.ndarray:
+        return self.to_array(self.clues(payment, history))
 
     def score(self, x: np.ndarray) -> float:
         # num_threads=1: for one row, starting extra threads costs more than it saves,

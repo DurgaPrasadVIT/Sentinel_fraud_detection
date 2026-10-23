@@ -361,3 +361,106 @@ no coordinated timing beyond normal night-time fraud). So the simulator:
 4. Your detector found every ring but only 17% of the money was after the alert. How
    would you alert earlier, and what does it cost?
 5. Your data had no rings. How did you test a ring detector honestly?
+
+---
+
+## AI case notes (`casenotes.py`, `cases.py`)
+
+### What it does
+For every payment sent to review or blocked, analysts get a short note: what happened, why
+it looks risky, what to do next. Example (template writer, real output):
+> BLOCK (risk 100.0%): $326.94 grocery_pos on card ****5478 at 2020-06-22 01:25. Why: amount
+> $326.94; $4,822.58 spent on this card in the previous 24 hours; category grocery_pos.
+> Next step: Contact the cardholder; if they don't recognise it, close and reissue the card.
+
+### Design decisions
+- **Not on the payment path.** The case service reads decisions from Kafka. A slow or broken
+  LLM can't slow down or break payments. Notes are written on 4 background threads.
+- **Facts first, LLM second.** We turn the model's SHAP reasons + clue values into plain-English
+  facts ourselves. The LLM only rephrases them.
+- **Hallucination guard.** Every number in an LLM note must match a number in the facts
+  (rounding allowed). Invented numbers, long digit strings (possible card numbers), errors or
+  timeouts -> the template note is used, and the rejection reason is saved for review.
+- **Evaluated with real LLM text** (`tests/test_note_guard_eval.py`): 8 notes written by an
+  LLM (Claude) from real cases, with natural rounding ("$2,081", "about 5 times"), must be
+  accepted (8/8); 10 realistic hallucinations must be rejected (10/10). The first version of
+  the guard **missed 4 of them**: a wrong time ("02:32" for 22:32, checked digit by digit), an
+  invented "2 previous chargebacks" (small numbers were always allowed), "in Paris", and
+  "already reported stolen". Fixed by checking times/dates as a whole, removing the
+  small-number loophole, rejecting unknown capitalised names, and rejecting claims about data
+  we don't have (reports, chargebacks, police...).
+- **Limit:** a word-level check can't catch every invented claim. Stronger options: structured
+  output (the LLM picks from given facts, code writes the numbers), or a second model that
+  verifies each sentence against the facts.
+- **Real API check:** the Anthropic writer was called against the real endpoint without a key:
+  401 Unauthorized -> template note, reason saved. This proves connectivity and the fallback,
+  not the request format (the server checks the key first).
+- **Privacy.** The LLM only sees `****1234`. With Ollama, nothing leaves the machine at all.
+- **Fairness.** The model uses age and town size. Notes never cite them: "risky because the
+  cardholder is 61" invites biased decisions and describes the person, not the behaviour.
+  The model's use of age is a known issue for a fairness review (e.g. compare false-block
+  rates across age groups, try the model without it).
+- **Pluggable writers:** `SENTINEL_LLM=template` (default) | `ollama` | `anthropic` | `openai`.
+- **At-least-once + idempotent saves.** Kafka may re-deliver after a crash; `txn_id` primary
+  keys make duplicates harmless. The Kafka position is committed only after rows are saved.
+- **SQLite with WAL** so the dashboard can read while the service writes. PostgreSQL in
+  production; the code would barely change.
+
+### Try a writer on one sample case
+```
+python -m sentinel.casenotes                  # shows the facts, the note, and why an LLM note was rejected
+```
+
+### Run it
+```
+python -m sentinel.cases                      # template notes
+$env:SENTINEL_LLM = "anthropic"; $env:ANTHROPIC_API_KEY = "<your key>"; python -m sentinel.cases   # Claude
+$env:SENTINEL_LLM = "ollama"; python -m sentinel.cases   # local LLM (install Ollama, `ollama pull llama3.1:8b`)
+```
+
+### Likely interview questions
+1. How do you stop an LLM from inventing facts in a regulated setting?
+2. Why is the LLM not called inside the scoring API?
+3. What happens if the LLM is down?
+4. Exactly-once vs at-least-once: how do you avoid duplicate cases?
+5. Your model uses age. What would you do about it?
+
+---
+
+## Live operations dashboard (`dashboard.py`)
+
+### What's on it
+- **Live numbers** (refresh every 3 s): payments scored, block / review share, money held for
+  checks, API p99 latency, open cases and ring alerts.
+- **Decisions per minute** chart.
+- **Ring alerts** from the graph detector (cards masked).
+- **Review queue**, highest risk first: each case shows its note, the model's reasons, and who
+  wrote the note (template or which LLM).
+- **Analyst buttons: "Confirm fraud" / "Not fraud".** These labels are the most valuable data
+  a fraud team has: they are how the model gets retrained on new fraud patterns
+  (human-in-the-loop). They also measure false alarms.
+
+### Design
+- The dashboard only **reads the case database**; it never talks to Kafka or the API, so a
+  busy dashboard can't affect payments.
+- Data functions (`summary`, `review_queue`, ...) are plain Python and unit-tested; the page
+  itself has a smoke test with Streamlit's `AppTest` (it caught a crash on a fresh machine
+  with no `data/` folder).
+- `st.fragment(run_every="3s")` refreshes only the live part of the page, not the whole app.
+- Streamlit was chosen because it's pure Python and fast to build. A bank would build the
+  analyst tool in a web framework (React etc.) on top of the same database/API.
+
+### Run the whole system
+```
+docker compose up -d
+uvicorn sentinel.api:app --log-level warning      # with REDIS_URL and KAFKA_BOOTSTRAP set
+python -m sentinel.rings
+python -m sentinel.cases
+streamlit run src/sentinel/dashboard.py
+python -m sentinel.simulator --rate 50 --limit 5000 --warmup-days 3 --attack --rings 5
+```
+
+### Likely interview questions
+1. Why do analyst labels matter more than the model's own predictions for retraining?
+2. Why shouldn't the dashboard read from the scoring API directly?
+3. How would you measure analyst workload and false alarms from this data?

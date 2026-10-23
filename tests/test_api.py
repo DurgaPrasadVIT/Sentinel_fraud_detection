@@ -140,6 +140,9 @@ def test_every_decision_is_published_once(monkeypatch):
     assert published[0]["txn_id"] == "abc-1"
     assert published[0]["decision"] == body["decision"]
     assert published[0]["card_id"] == PAYMENT["card_id"]
+    clues = published[0]["clues"]
+    assert clues["amount"] == PAYMENT["amount"] and clues["category"] == PAYMENT["category"]
+    assert clues["amount_vs_avg"] is None  # first payment of this card: no average yet (not NaN)
 
 
 def test_txn_id_is_created_when_missing():
