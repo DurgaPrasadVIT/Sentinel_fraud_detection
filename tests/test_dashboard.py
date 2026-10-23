@@ -49,8 +49,16 @@ def test_labels_move_cases_out_of_the_queue(db):
 
 
 def test_per_minute_and_rings(db):
-    assert per_minute(db).sum().sum() == 4
-    assert ring_alerts(db).iloc[0]["devices"] == 1
+    chart = per_minute(db)
+    assert chart.sum().sum() == 4 and chart.index[0] == "21:00"
+    ring = ring_alerts(db).iloc[0]
+    assert ring["devices"] == 1 and ring["n_cards"] == 2
+
+
+def test_dollar_signs_are_not_read_as_math():
+    from sentinel.dashboard import plain
+
+    assert plain("$13.63 then $2,093.49") == "\\$13.63 then \\$2,093.49"
 
 
 def test_page_renders(tmp_path, monkeypatch):

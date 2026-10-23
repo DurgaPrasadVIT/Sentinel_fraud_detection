@@ -47,14 +47,17 @@ def summary(db: sqlite3.Connection, last_n: int = 2000) -> dict:
 
 
 def per_minute(db: sqlite3.Connection, minutes: int = 30) -> pd.DataFrame:
-    """Decisions per minute (wall-clock time when scored), last `minutes` minutes."""
+    """Decisions per minute (wall-clock time when scored), last `minutes` minutes.
+    Index = "HH:MM" labels, so bars are drawn as bars, not thin time lines."""
     df = pd.read_sql("SELECT decision, scored_at FROM decisions ORDER BY scored_at DESC LIMIT 200000", db)
     if df.empty:
         return pd.DataFrame(columns=["approve", "review", "block"])
     df["minute"] = pd.to_datetime(df["scored_at"], format="ISO8601").dt.floor("min")
     df = df[df["minute"] >= df["minute"].max() - pd.Timedelta(minutes=minutes)]
     table = df.pivot_table(index="minute", columns="decision", aggfunc="size", fill_value=0)
-    return table.reindex(columns=["approve", "review", "block"], fill_value=0)
+    table = table.reindex(columns=["approve", "review", "block"], fill_value=0)
+    table.index = table.index.strftime("%H:%M")
+    return table
 
 
 def review_queue(db: sqlite3.Connection, status: str = "open", limit: int = 50) -> pd.DataFrame:
@@ -63,14 +66,23 @@ def review_queue(db: sqlite3.Connection, status: str = "open", limit: int = 50) 
         "FROM cases WHERE status = ? ORDER BY score DESC, ts DESC LIMIT ?",
         db, params=(status, limit))
     df["reasons"] = df["reasons"].map(lambda r: ", ".join(json.loads(r)))
+    df["ts"] = df["ts"].str.replace("T", " ")
     return df
 
 
 def ring_alerts(db: sqlite3.Connection) -> pd.DataFrame:
     df = pd.read_sql("SELECT created_at, cards, devices, payments, amount FROM rings ORDER BY id DESC", db)
+    df["n_cards"] = df["cards"].map(lambda c: len(json.loads(c)))
     df["cards"] = df["cards"].map(lambda c: ", ".join(json.loads(c)))
     df["devices"] = df["devices"].map(lambda d: len(json.loads(d)))
-    return df
+    df["created_at"] = df["created_at"].str.replace("T", " ")
+    return df[["created_at", "n_cards", "devices", "payments", "amount", "cards"]]
+
+
+def plain(text: str) -> str:
+    """Show text as-is: Markdown treats "$...$" as a math formula, which garbles notes
+    with two dollar amounts."""
+    return text.replace("$", "\\$")
 
 
 def label_stats(db: sqlite3.Connection) -> dict:
@@ -107,20 +119,27 @@ def app() -> None:
 
         left, right = st.columns([3, 2])
         with left:
-            st.subheader("Decisions per minute")
+            st.subheader("Review and block decisions per minute")
             chart = per_minute(db)
             if chart.empty:
                 st.caption("Waiting for decisions...")
             else:
-                st.bar_chart(chart, color=["#9ca3af", "#f59e0b", "#dc2626"])
+                # ~98% of payments are approved; drawing them would hide what matters.
+                st.bar_chart(chart[["review", "block"]], color=["#f59e0b", "#dc2626"])
+                st.caption(f"Approved in this period: {int(chart['approve'].sum()):,}")
         with right:
             st.subheader("Ring alerts")
             rings = ring_alerts(db)
             if rings.empty:
                 st.caption("No rings detected yet.")
             else:
-                st.dataframe(rings, hide_index=True, use_container_width=True)
-            st.caption(f"Analyst labels so far: {label_stats(db) or 'none'}")
+                st.dataframe(rings, hide_index=True, use_container_width=True, column_config={
+                    "created_at": "Alert time", "n_cards": "Cards", "devices": "Devices",
+                    "payments": "Payments", "amount": st.column_config.NumberColumn(
+                        "Amount", format="dollar"), "cards": "Card numbers (masked)"})
+            labels = label_stats(db)
+            st.caption("Analyst labels so far: "
+                       + (", ".join(f"{k} {v:,}" for k, v in labels.items()) or "none"))
 
     live()
 
@@ -129,10 +148,10 @@ def app() -> None:
     if queue.empty:
         st.caption("No open cases. Start the simulator and the case service.")
     for case in queue.head(15).itertuples():
-        title = (f"{case.decision.upper()}  |  risk {case.score:.1%}  |  ${case.amount:,.2f} "
-                 f"{case.category}  |  card {case.card}  |  {case.ts}")
+        title = plain(f"{case.decision.upper()}  |  risk {case.score:.1%}  |  ${case.amount:,.2f} "
+                      f"{case.category}  |  card {case.card}  |  {case.ts}")
         with st.expander(title):
-            st.write(case.note)
+            st.markdown(plain(case.note))
             st.caption(f"Model reasons: {case.reasons}  |  note by: {case.note_source}")
             a, b, _ = st.columns([1, 1, 4])
             if a.button("Confirm fraud", key=f"f-{case.txn_id}"):
