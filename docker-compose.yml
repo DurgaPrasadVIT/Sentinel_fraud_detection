@@ -123,7 +123,7 @@ services:
     profiles: ["demo"]
     restart: "no"
     command: ["python", "-m", "sentinel.simulator", "--url", "http://api:8000/score",
-              "--rate", "50", "--limit", "3000", "--warmup-days", "3", "--attack", "--rings", "5"]
+              "--rate", "50", "--limit", "3000", "--attack", "--rings", "5"]
     volumes:
       - ./data/processed:/app/data/processed:ro
     healthcheck: {disable: true}

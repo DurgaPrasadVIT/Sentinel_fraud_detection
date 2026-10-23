@@ -1,6 +1,7 @@
 """Tests for sentinel.simulator."""
 
 import random
+from datetime import timedelta
 
 import pandas as pd
 
@@ -86,3 +87,10 @@ def test_mule_ring_is_one_connected_group_on_two_devices():
     for p in ring:
         detector.add(p)
     assert len(detector.rings()) == 1 and len(detector.rings()[0].cards) == 7
+
+
+def test_default_warm_up_covers_the_longest_history_window():
+    from sentinel.features import WINDOWS
+    from sentinel.simulator import FULL_HISTORY_DAYS
+
+    assert timedelta(days=FULL_HISTORY_DAYS) >= max(WINDOWS.values())
