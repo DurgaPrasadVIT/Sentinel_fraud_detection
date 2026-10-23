@@ -73,3 +73,13 @@ def test_old_payments_are_removed_from_redis(redis_store):
     redis_store.features_and_update(1, datetime(2020, 1, 20), 20.0)  # 19 days later
     recent_key = redis_store._keys(1)[0]
     assert redis_store.redis.zcard(recent_key) == 1  # only the new payment is kept
+
+
+def test_cards_on_device_counts_distinct_cards_in_30_days(redis_store):
+    memory = InMemoryCardStore()
+    for store in (memory, redis_store):
+        day = datetime(2020, 1, 1)
+        assert store.cards_on_device("d1", 1, day) == 1
+        assert store.cards_on_device("d1", 1, day + timedelta(hours=1)) == 1  # same card again
+        assert store.cards_on_device("d1", 2, day + timedelta(days=1)) == 2
+        assert store.cards_on_device("d1", 3, day + timedelta(days=40)) == 1  # 1 and 2 forgotten

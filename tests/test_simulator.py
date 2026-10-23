@@ -60,3 +60,29 @@ def test_report_counts_fraud_stopped():
     report.add({**ROW}, None, 5000.0)  # an error
     assert report.fraud_seen == 2 and report.fraud_stopped == 1
     assert report.attacks_stopped == 1 and report.errors == 1
+
+
+def test_devices_are_stable_and_households_share_a_tablet():
+    from sentinel.simulator import Devices
+
+    devices = Devices(range(1000), seed=0)
+    assert len(devices.family_tablet) >= 20               # ~3% of cards
+    groups = {}
+    for card, tablet in devices.family_tablet.items():
+        groups.setdefault(tablet, []).append(card)
+    assert all(2 <= len(g) <= 3 for g in groups.values())  # households are small
+    assert Devices(range(1000), seed=0).own == devices.own  # same seed -> same devices
+
+
+def test_mule_ring_is_one_connected_group_on_two_devices():
+    from sentinel.rings import RingDetector
+    from sentinel.simulator import mule_ring
+
+    profiles = {c: {**to_payment(ROW), "card_id": c} for c in range(10, 17)}
+    ring = mule_ring(0, list(profiles), pd.Timestamp("2020-12-21"), profiles, random.Random(0))
+    assert len({p["device_id"] for p in ring}) == 2
+    assert all(p["is_fraud"] == 1 and 40 <= p["amount"] <= 250 for p in ring)
+    detector = RingDetector(min_cards=7)
+    for p in ring:
+        detector.add(p)
+    assert len(detector.rings()) == 1 and len(detector.rings()[0].cards) == 7

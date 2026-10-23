@@ -299,3 +299,65 @@ python -m sentinel.decisions  # re-choose approve/review/block lines, saved with
 3. What is "impossible travel" and what data do you need for it?
 4. How do you stop a model and its thresholds from getting out of sync? *(Version them together;
    fingerprint; fail at startup.)*
+
+---
+
+## Fraud rings and money mules (`rings.py`, device rule in `api.py`)
+
+### Why a graph
+A single-payment model judges each payment alone. A **mule ring** (several stolen cards
+cashed out from a few shared phones, with small "low and slow" payments) looks normal one
+payment at a time. The connections give it away:
+```
+card A -- device 1 -- card B -- device 2 -- card C
+```
+A and C never shared a device, but they're in the same group. Finding groups =
+**connected components** of the card-device graph.
+
+### Union-find (DSA)
+- `find(x)`: which group is x in. `union(a, b)`: merge two groups.
+- **Path compression** + **union by size** make each operation almost O(1), so it works on
+  millions of cards and devices, and it updates **incrementally** as payments stream in.
+- Each group keeps its card list; when groups merge, the smaller list moves into the bigger
+  one ("small-to-large"), so each card moves at most log2(n) times.
+- BFS/DFS would also find components, but must re-scan the graph; union-find just updates.
+
+### Two layers
+1. **Real-time rule in the API** (Redis sorted set per device): a device used by 5+ different
+   cards in 30 days sends the payment to review, with the reason `device_used_by_N_cards`.
+2. **Graph detector** (`python -m sentinel.rings`) reads the Kafka decisions stream, alerts
+   when a group reaches 5 cards, and publishes the alert to the `ring-alerts` topic for a
+   case-management system.
+
+### Honest test setup (red-team injection)
+The public dataset has **no devices and no rings** (checked: no common point of compromise,
+no coordinated timing beyond normal night-time fraud). So the simulator:
+- gives every card 1-2 own devices, and puts ~3% of cards in **households of 2-3 that share
+  a family tablet** (normal behaviour the detector must not flag);
+- injects mule rings: 6-9 real cards (keeping their owners' details), 2 shared devices,
+  3 payments each of $40-250 over 12 hours.
+
+### Results (3,000 real payments + 5 rings + card-testing attacks)
+- **Graph detector: 5/5 rings found, 35/35 ring cards, 0 innocent cards flagged.**
+- **At payment time only 8-10 of 105 ring payments were stopped.** Rings spread their cards
+  over 2 devices, so each device stays under the 5-card rule, and the model sees small normal
+  amounts. This is the point: the graph sees what per-payment checks can't.
+- **Timeliness: 17% of ring money came after the alert** (stoppable by freezing the ring's
+  cards). The alert waits for the 5th card; by then most payments are done.
+
+### Known limits / next steps
+- Synthetic benign behaviour is simple (households <= 3 cards), so 0 false flags is easy here.
+  Real data has public Wi-Fi, shared work devices and device-ID collisions: you'd add device
+  reputation, edge weights, time decay (forget old links) and a review queue for alerts.
+- Earlier alerts: score groups by risk (fraction of cards with risky payments, new devices)
+  instead of a fixed card count.
+- The graph lives in one process's memory; at scale it would be sharded or kept in a graph
+  store, rebuilt from Kafka after a restart.
+
+### Likely interview questions
+1. Why would a per-payment model miss a mule ring?
+2. Union-find vs BFS for connected components on a stream?
+3. How do you avoid flagging families that share a tablet?
+4. Your detector found every ring but only 17% of the money was after the alert. How
+   would you alert earlier, and what does it cost?
+5. Your data had no rings. How did you test a ring detector honestly?
