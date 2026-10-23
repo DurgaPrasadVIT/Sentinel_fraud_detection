@@ -42,6 +42,14 @@ training (`tests/test_scoring.py`, tolerance 1e-12).
 
 0 failed requests in every run.
 
+**Developer laptop, real Redis in Docker** (Ryzen 5, 6 cores, 20 terminals, no pause)
+
+| Throughput | p50 | p99 |
+|---|---|---|
+| **900 req/s** | **14 ms** | **30 ms** |
+
+50,524 requests, 0 failures. Every payment includes a Redis round trip for card history.
+
 Under heavy load, the remaining latency is **queueing**: 50 requests waiting for one Python
 process on a shared 2-CPU machine. Each request itself takes ~4 ms.
 

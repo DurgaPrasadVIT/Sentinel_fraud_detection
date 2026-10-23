@@ -240,3 +240,62 @@ Third terminal: `python -m sentinel.simulator --rate 50 --limit 3000 --warmup-da
 4. What's the difference between throughput and latency? Why do both matter?
 5. How would you scale to 10,000 payments/s? *(More processes and API copies, shared Redis,
    partitioned Kafka, maybe a compiled model runtime such as ONNX or Treelite.)*
+
+---
+
+## Personal clues and the travel-speed clue (`features.py`: `speed_kmh`)
+
+### What we tried, and what the data said
+Idea: "is this payment normal **for this card**?" Candidate clues, checked on all 1.85M payments
+(median, normal vs fraud) before writing any production code:
+
+| Candidate | Normal | Fraud | Verdict |
+|---|---|---|---|
+| amount vs card's mean, in std units | -0.19 | 2.47 | strong alone, but *hurt* the model (overlaps `amount_vs_avg`) |
+| amount vs card's max so far | 0.02 | 0.30 | same |
+| share of card's payments at this hour | 0.047 | 0.042 | no signal |
+| share of card's payments in this category | 0.081 | 0.080 | no signal |
+| km from the card's previous shop | 101 | 100 | no signal |
+| **travel speed from the previous shop (km/h)** | **21** | **64** | **kept** |
+
+The synthetic data gives cards no personal habits and places shops randomly, so hour/category
+habits and true "impossible travel" can't be demonstrated with it. The code still computes
+real travel speed: on real data, New York at 10:00 then London at 10:15 gives >10,000 km/h.
+
+### Don't trust one training run
+Adding `speed_kmh`, compared over **4 random seeds**:
+- PR-AUC higher in 4 of 4 seeds (+0.0013 to +0.0047)
+- money lost lower in 4 of 4 seeds, **~12% less on average**
+- good customers blocked: **mixed** (better in 2 seeds, worse in 2), so we don't claim it
+
+The released model (seed 42) shows $25,268 -> $18,342 (-27%), but seed 42 happened to be the
+weakest baseline. The honest number to quote is the **~12% average**.
+
+### Bug this exposed: hard-coded decision lines
+The block line (0.69) was typed into the API. After retraining, the best line became 0.85.
+Without a fix, the API would have silently used lines tuned for a different model.
+Now `python -m sentinel.decisions` saves `models/policy.json` with a **fingerprint of the model
+file**, and the API refuses to start if the policy belongs to another model.
+
+### Checks
+- `speed_kmh` from the training loop matches an independent vectorised pandas version on all
+  1,852,394 payments: 0 mismatches.
+- Redis store vs training logic: parity test now includes shop locations.
+- Live simulator run (same settings as before): fraud stopped 36/42 -> 38/42, injected attack
+  payments 25/30 -> 27/30.
+
+### After every retrain
+```
+python -m sentinel.features   # rebuild clues
+python -m sentinel.train      # train and save the model
+python -m sentinel.decisions  # re-choose approve/review/block lines, saved with the model
+```
+
+### Likely interview questions
+1. A new feature improved your metric. How do you know it's real? *(Several seeds; report the
+   average; only claim what is consistent.)*
+2. Why can adding a strong feature make a model worse? *(Redundant with existing features,
+   adds noise; early stopping hit sooner.)*
+3. What is "impossible travel" and what data do you need for it?
+4. How do you stop a model and its thresholds from getting out of sync? *(Version them together;
+   fingerprint; fail at startup.)*

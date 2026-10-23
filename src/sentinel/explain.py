@@ -8,11 +8,10 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
+from sentinel.decisions import Policy
 from sentinel.features import FEATURES_DIR
 from sentinel.scoring import top_reasons
 from sentinel.train import FEATURES, MODELS_DIR
-
-BLOCK_LINE = 0.69  # from the money-based policy
 
 
 def load_model() -> lgb.Booster:
@@ -51,7 +50,8 @@ def main() -> None:
     print_cases("Top 3 riskiest payments", booster, test.nlargest(3, "score"))
 
     # 2. Why did we wrongly block some good customers?
-    false_blocks = test[(test["score"] >= BLOCK_LINE) & (test["is_fraud"] == 0)]
+    block_line = Policy.load().block_line
+    false_blocks = test[(test["score"] >= block_line) & (test["is_fraud"] == 0)]
     print_cases("Good customers we wrongly blocked", booster, false_blocks.nlargest(3, "score"))
 
     # 3. Which clues matter most overall?

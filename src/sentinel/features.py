@@ -31,9 +31,14 @@ class CardState:
         self.n_payments = 0
         self.total_spent = 0.0
         self.last_ts = None
+        self.last_lat = None
+        self.last_lon = None
 
-    def features(self, ts, amount: float) -> dict:
-        """Clues for a new payment, using only EARLIER payments."""
+    def features(self, ts, amount: float, lat: float = np.nan, lon: float = np.nan) -> dict:
+        """Clues for a new payment, using only EARLIER payments.
+
+        lat, lon = where this payment happens (the shop's location).
+        """
         out = {}
         for name, window in self.windows.items():
             count, total = window.snapshot(ts)
@@ -46,18 +51,23 @@ class CardState:
             out["amount_vs_avg"] = np.nan
 
         if self.last_ts is not None:
-            out["secs_since_last"] = (ts - self.last_ts).total_seconds()
+            secs = (ts - self.last_ts).total_seconds()
+            out["secs_since_last"] = secs
+            out["speed_kmh"] = travel_speed_kmh(self.last_lat, self.last_lon, lat, lon, secs)
         else:
             out["secs_since_last"] = np.nan
+            out["speed_kmh"] = np.nan
         return out
 
-    def update(self, ts, amount: float) -> None:
+    def update(self, ts, amount: float, lat: float = np.nan, lon: float = np.nan) -> None:
         """Remember this payment for future clues."""
         for window in self.windows.values():
             window.add(ts, amount)
         self.n_payments += 1
         self.total_spent += amount
         self.last_ts = ts
+        self.last_lat = lat
+        self.last_lon = lon
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -70,14 +80,29 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 6371 * 2 * np.arcsin(np.sqrt(a))
 
 
+MIN_TRAVEL_HOURS = 1 / 60  # treat gaps under 1 minute as 1 minute (no division by ~0)
+
+
+def travel_speed_kmh(lat1, lon1, lat2, lon2, secs: float) -> float:
+    """How fast the card would have to travel between its last shop and this one.
+
+    New York at 10:00 and London at 10:15 = thousands of km/h = "impossible travel".
+    """
+    if lat1 is None or lon1 is None:
+        return np.nan
+    hours = max(secs / 3600, MIN_TRAVEL_HOURS)
+    return float(haversine_km(lat1, lon1, lat2, lon2)) / hours
+
+
 def add_card_history(df: pd.DataFrame) -> pd.DataFrame:
     """Walk through payments in time order and add history clues per card."""
     states = defaultdict(CardState)
     rows = []
-    for card, ts, amount in zip(df["card_id"], df["ts"], df["amount"]):
+    columns = [df["card_id"], df["ts"], df["amount"], df["merch_lat"], df["merch_lon"]]
+    for card, ts, amount, lat, lon in zip(*columns):
         state = states[card]
-        rows.append(state.features(ts, amount))  # 1. clues from the past
-        state.update(ts, amount)                 # 2. then remember this payment
+        rows.append(state.features(ts, amount, lat, lon))  # 1. clues from the past
+        state.update(ts, amount, lat, lon)                 # 2. then remember this payment
     return pd.concat([df.reset_index(drop=True), pd.DataFrame(rows)], axis=1)
 
 

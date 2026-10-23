@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from sentinel.features import build_features
 
@@ -57,3 +58,18 @@ def test_night_and_distance():
     assert out.iloc[0]["is_night"] == 1   # 10 PM
     assert out.iloc[3]["is_night"] == 0   # 12 PM
     assert out.iloc[0]["distance_km"] == 0
+
+def test_travel_speed_between_shops():
+    df = make_df()
+    df.loc[1, ["merch_lat", "merch_lon"]] = [51.5, -0.13]  # 2nd payment of card 1: London
+    out = build_features(df)
+    assert np.isnan(out.iloc[0]["speed_kmh"])         # first payment: nothing to compare
+    assert out.iloc[1]["speed_kmh"] > 10_000          # New York -> London in 30 min: impossible
+    assert out.iloc[3]["speed_kmh"] < 1_000           # back home 13.5 hours later: possible
+
+
+def test_travel_speed_counts_very_short_gaps_as_one_minute():
+    from sentinel.features import travel_speed_kmh
+
+    one_km_east = -74.0 + 1 / 84.4  # ~1 km at this latitude
+    assert travel_speed_kmh(40.0, -74.0, 40.0, one_km_east, secs=0) == pytest.approx(60, rel=0.05)
