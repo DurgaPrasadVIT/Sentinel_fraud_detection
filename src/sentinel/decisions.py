@@ -22,6 +22,7 @@ COST_REVIEW = 3.0         # analyst time per case
 MAX_REVIEWS_PER_DAY = 50  # what the review team can handle
 
 APPROVE, REVIEW, BLOCK = 0, 1, 2
+LABELS_BY_CODE = {APPROVE: "approve", REVIEW: "review", BLOCK: "block"}
 
 MODEL_PATH = MODELS_DIR / "fraud_lgbm.txt"
 POLICY_PATH = MODELS_DIR / "policy.json"

@@ -21,6 +21,10 @@ class SlidingWindow:
         while self.items and self.items[0][0] <= now - self.window:
             _, old_amount = self.items.popleft()
             self.total -= old_amount
+        if not self.items:
+            # Adding and subtracting floats leaves tiny leftovers (e.g. 1e-14): an empty
+            # window must total exactly 0 (found by the drift monitor).
+            self.total = 0.0
 
     def snapshot(self, now: datetime) -> tuple[int, float]:
         """Count and total of payments in the window BEFORE `now`."""

@@ -90,6 +90,27 @@ def label_stats(db: sqlite3.Connection) -> dict:
     return {STATUSES.get(s, s): n for s, n in rows}
 
 
+def shadow_summary(db: sqlite3.Connection) -> dict:
+    """How the challenger (shadow) compares with the champion on the same live payments."""
+    df = pd.read_sql("SELECT champion_decision AS champ, challenger_decision AS chall FROM shadow", db)
+    n = len(df)
+    if n == 0:
+        return {"n": 0}
+    acts = lambda col: df[col] != "approve"  # noqa: E731
+    return {
+        "n": n,
+        "agreement": float((df["champ"] == df["chall"]).mean()),
+        "champion_acts": int(acts("champ").sum()),
+        "challenger_acts": int(acts("chall").sum()),
+        "only_challenger": int((acts("chall") & ~acts("champ")).sum()),
+        "only_champion": int((acts("champ") & ~acts("chall")).sum()),
+    }
+
+
+def drift_report(db: sqlite3.Connection) -> pd.DataFrame:
+    return pd.read_sql("SELECT checked_at, window, feature, psi, status FROM drift ORDER BY psi DESC", db)
+
+
 def set_status(db: sqlite3.Connection, txn_id: str, status: str) -> None:
     if status not in STATUSES:
         raise ValueError(f"unknown status {status!r}")
@@ -133,7 +154,7 @@ def app() -> None:
             if rings.empty:
                 st.caption("No rings detected yet.")
             else:
-                st.dataframe(rings, hide_index=True, use_container_width=True, column_config={
+                st.dataframe(rings, hide_index=True, width="stretch", column_config={
                     "created_at": "Alert time", "n_cards": "Cards", "devices": "Devices",
                     "payments": "Payments", "amount": st.column_config.NumberColumn(
                         "Amount", format="dollar"), "cards": "Card numbers (masked)"})
@@ -142,6 +163,43 @@ def app() -> None:
                        + (", ".join(f"{k} {v:,}" for k, v in labels.items()) or "none"))
 
     live()
+
+    @st.fragment(run_every="10s")
+    def model_health() -> None:
+        st.subheader("Model health")
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**Shadow challenger** (scored on live traffic, never acted on)")
+            sh = shadow_summary(db)
+            if sh["n"] == 0:
+                st.caption("No shadow scores yet. Start `python -m sentinel.modelops`.")
+            else:
+                a, b, c = st.columns(3)
+                a.metric("Payments compared", f"{sh['n']:,}")
+                b.metric("Same decision", f"{sh['agreement']:.1%}")
+                c.metric("Review/block: champion vs challenger",
+                         f"{sh['champion_acts']:,} vs {sh['challenger_acts']:,}")
+                st.caption(f"Only the challenger would act: {sh['only_challenger']:,} | "
+                           f"only the champion acts: {sh['only_champion']:,}")
+        with right:
+            st.markdown("**Data drift** (live traffic vs training snapshot, PSI)")
+            drift = drift_report(db)
+            if drift.empty:
+                st.caption("No drift check yet (runs every 1,000 payments).")
+            else:
+                flagged = drift[drift["status"].isin(["watch", "alert"])]
+                if flagged.empty:
+                    st.success(f"All {len(drift)} clues stable (last {int(drift['window'].iloc[0]):,} payments).")
+                else:
+                    st.warning(f"{(drift['status'] == 'alert').sum()} alert, "
+                               f"{(drift['status'] == 'watch').sum()} watch, "
+                               f"over the last {int(drift['window'].iloc[0]):,} payments.")
+                st.dataframe(drift[["feature", "psi", "status"]].head(8), hide_index=True,
+                             width="stretch",
+                             column_config={"psi": st.column_config.NumberColumn("PSI", format="%.3f")})
+                st.caption("PSI < 0.1 stable, 0.1-0.25 watch, > 0.25 significant shift.")
+
+    model_health()
 
     # Its own fragment: refreshes by itself (new cases appear without reloading the page),
     # and less often than the numbers, so an analyst reading a note isn't interrupted.

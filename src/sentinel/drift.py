@@ -82,19 +82,33 @@ def build_reference(df: pd.DataFrame, features: list[str], scores: np.ndarray,
     return ref
 
 
-def compare(reference: dict, live: pd.DataFrame, live_scores=None) -> pd.DataFrame:
-    """PSI per clue (and for the model's scores), worst first."""
+# Clues with a daily or weekly cycle can only be compared over a window that covers
+# the whole cycle: 2 days of traffic contain only 2 weekdays, which is not drift.
+MIN_SPAN_HOURS = {"day_of_week": 7 * 24, "hour": 24, "is_night": 24}
+
+
+def compare(reference: dict, live: pd.DataFrame, live_scores=None,
+            span_hours: float | None = None) -> pd.DataFrame:
+    """PSI per clue (and for the model's scores), worst first.
+
+    span_hours: how much time the live window covers. Cyclic clues are skipped when
+    the window is shorter than their cycle.
+    """
     rows = []
     for name, spec in reference["features"].items():
         if name not in live:
+            continue
+        if span_hours is not None and span_hours < MIN_SPAN_HOURS.get(name, 0):
+            rows.append((name, np.nan))
             continue
         shares = bucket_shares(live[name], spec.get("edges"), spec.get("categories"))
         rows.append((name, psi(spec["shares"], shares)))
     if live_scores is not None:
         spec = reference["score"]
         rows.append(("model_score", psi(spec["shares"], bucket_shares(live_scores, spec["edges"], None))))
-    out = pd.DataFrame(rows, columns=["feature", "psi"]).sort_values("psi", ascending=False)
-    out["status"] = np.select([out["psi"] > PSI_ALERT, out["psi"] > PSI_WATCH], ["alert", "watch"], "ok")
+    out = pd.DataFrame(rows, columns=["feature", "psi"]).sort_values("psi", ascending=False, na_position="last")
+    out["status"] = np.select([out["psi"].isna(), out["psi"] > PSI_ALERT, out["psi"] > PSI_WATCH],
+                              ["skipped (window too short)", "alert", "watch"], "ok")
     return out.reset_index(drop=True)
 
 

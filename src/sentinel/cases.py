@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS rings (
     id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, cards TEXT, devices TEXT,
     payments INTEGER, amount REAL
 );
+CREATE TABLE IF NOT EXISTS shadow (
+    txn_id TEXT PRIMARY KEY, champion_score REAL, champion_decision TEXT,
+    challenger_score REAL, challenger_decision TEXT, scored_at TEXT
+);
+CREATE TABLE IF NOT EXISTS drift (
+    checked_at TEXT, window INTEGER, feature TEXT, psi REAL, status TEXT
+);
 """
 
 

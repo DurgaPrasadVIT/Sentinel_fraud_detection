@@ -137,8 +137,18 @@ def card_testing_attack(victim: dict, rng: random.Random) -> list[dict]:
     return attack
 
 
+def apply_drift(payment: dict, rng: random.Random) -> dict:
+    """Simulate a change in customer behaviour (e.g. a holiday season, a new online
+    marketplace): bigger amounts and much more online shopping. Labels don't change;
+    only what "normal" traffic looks like does."""
+    p = {**payment, "amount": round(payment["amount"] * 2.5, 2)}
+    if rng.random() < 0.4:
+        p["category"] = rng.choice(["shopping_net", "misc_net"])
+    return p
+
+
 def load_stream(limit: int, warmup_days: int, attack_every: int, n_rings: int = 0,
-                seed: int = 0) -> list[dict]:
+                seed: int = 0, drift: bool = False) -> list[dict]:
     """Payments in time order: optional warm-up period, then the measured part
     (+ card-testing attacks and mule rings)."""
     df = pd.read_parquet(PROCESSED_DIR / "fraudTest.parquet").sort_values("ts", kind="stable")
@@ -157,6 +167,8 @@ def load_stream(limit: int, warmup_days: int, attack_every: int, n_rings: int = 
     stream = [payment(r, True) for r in warm.to_dict("records")]
     for i, r in enumerate(measured.to_dict("records")):
         p = payment(r, False)
+        if drift:
+            p = apply_drift(p, rng)
         stream.append(p)
         if attack_every and i and i % attack_every == 0:
             stream += [{**a, "warmup": False} for a in card_testing_attack(p, rng)]
@@ -320,10 +332,13 @@ def main() -> None:
                         help="replay this many days first to build card history (not measured)")
     parser.add_argument("--attack", action="store_true", help="inject a card-testing attack every 500 payments")
     parser.add_argument("--rings", type=int, default=0, help="inject this many money-mule rings")
+    parser.add_argument("--drift", action="store_true",
+                        help="change normal behaviour (2.5x amounts, more online shopping) to test drift alerts")
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
-    stream = load_stream(args.limit, args.warmup_days, 500 if args.attack else 0, args.rings)
+    stream = load_stream(args.limit, args.warmup_days, 500 if args.attack else 0, args.rings,
+                         drift=args.drift)
     run(args.url, stream, args.rate, args.workers)
 
 

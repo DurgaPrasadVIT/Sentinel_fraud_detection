@@ -50,3 +50,15 @@ def test_unknown_category_and_missing_values_have_their_own_buckets():
     report = compare(ref, live).set_index("feature")
     assert report.loc["category", "status"] == "alert"   # 100% "other"
     assert report.loc["amount", "status"] == "alert"     # 100% missing
+
+
+def test_cyclic_clues_are_skipped_when_the_window_is_too_short():
+    train = make(seed=0)
+    train["day_of_week"] = np.arange(len(train)) % 7          # all weekdays
+    ref = build_reference(train, FEATURES + ["day_of_week"], np.zeros(len(train)))
+    live = make(seed=1)
+    live["day_of_week"] = 0                                      # 2 days of traffic: only Mondays
+    report = compare(ref, live, span_hours=48).set_index("feature")
+    assert report.loc["day_of_week", "status"] == "skipped (window too short)"
+    week = compare(ref, live, span_hours=24 * 8).set_index("feature")
+    assert week.loc["day_of_week", "status"] == "alert"         # a real week of only Mondays is drift

@@ -94,6 +94,18 @@ services:
     depends_on:
       kafka: {condition: service_healthy}
 
+  modelops:
+    <<: *sentinel
+    profiles: ["app"]
+    container_name: sentinel-modelops
+    command: ["python", "-m", "sentinel.modelops"]
+    volumes:
+      - ./models:/app/models:ro               # challenger + drift reference
+      - cases:/app/cases
+    healthcheck: {disable: true}
+    depends_on:
+      kafka: {condition: service_healthy}
+
   dashboard:
     <<: *sentinel
     profiles: ["app"]

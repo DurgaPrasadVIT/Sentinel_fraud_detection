@@ -583,3 +583,64 @@ traffic to it with PSI (`drift.py`).
    metric, then shadow mode on live traffic, then a gradual rollout / A/B test.)*
 3. When would you use unsupervised anomaly detection in fraud, and why did it lose here?
 4. What is PSI and what thresholds do teams use?
+
+## Shadow mode and live drift (`modelops.py`, `drift.py`)
+
+### What it does (simple words)
+A small worker reads every scored payment from Kafka (consumer group `sentinel-modelops`) and does
+two jobs. It never changes a live decision; it only watches and writes to the case database.
+
+1. **Shadow mode.** The challenger scores the same payment and we store both decisions side by side
+   (`shadow` table). This is how a new model is tried on real traffic with zero risk to customers.
+2. **Drift check.** Every 1,000 payments it compares the last 5,000 against `models/reference.json`
+   using PSI, per clue and for the model score itself (`drift` table).
+
+The dashboard's **Model health** panel shows both: how often the two models agree, how many
+payments each would send to review/block, and a PSI table (ok < 0.1 <= watch < 0.25 <= alert).
+
+### Why watch the model *score* too
+Clue drift says "the inputs changed". Score drift says "the model now behaves differently", which
+is what the business feels (review queue size). Under the drift test the champion's review/block
+count went from **19 to 264** per 5,000 payments; the score PSI was the loudest alarm (1.04).
+
+### Three false alarms we had to fix first
+On normal traffic the first version alerted on clues that had not really changed:
+
+| Alarm | Root cause | Fix |
+|---|---|---|
+| `sum_1h` | The sliding window subtracted floats; an empty window kept tiny leftovers like 1e-13 instead of 0, so live values fell in a different bucket than training. | Reset the total to exactly 0 when the window empties (test added). Retrained, now model v2. |
+| `model_score` | Events carried the score rounded to 4 digits, which moved many scores across bucket edges near 0. | Publish the full-precision score. |
+| `day_of_week`, `hour` | A few hours of traffic can't contain every weekday, so PSI is "high" by construction. | Skip cyclic clues until the window covers a full cycle (`skipped (window too short)`). |
+
+Lesson: a drift alarm is only useful if it is quiet on normal traffic. Check it on a no-drift run
+before trusting it.
+
+Retrain after the window fix (v2): test PR-AUC 0.969, money lost $17,043 vs $18,342 for v1, which is
+within seed-to-seed noise, i.e. the fix didn't hurt the model. Both versions are in the registry.
+
+### Results on the simulator
+| Run | Drift alerts | Notes |
+|---|---|---|
+| Normal traffic | 0 | 4 "watch" on history clues (`count_7d`, `sum_24h`...): live cards start with little memory |
+| `--drift` (amounts x2.5, 40% moved to online shopping) | 5-6 | amount, category, amount_vs_avg, model_score, sum_24h |
+| Shadow agreement, normal traffic | 94.6% | the challenger flags many more payments (it lost offline, see above) |
+
+### How to run it
+```
+docker compose --profile app up -d --build
+docker compose exec redis redis-cli FLUSHALL
+docker compose --profile demo run --rm simulator
+docker compose --profile demo run --rm simulator python -m sentinel.simulator --url http://api:8000/score --rate 50 --limit 3000 --warmup-days 3 --drift
+```
+Open the dashboard and look at **Model health**.
+
+### What a real team adds next
+- Page someone only if an alert lasts for several checks in a row (avoid one-off spikes).
+- Compare against labels when they arrive (weeks later) to measure real performance, not just drift.
+- Promote a challenger only after shadow results, then a small A/B rollout.
+
+### Likely interview questions
+1. What is shadow mode and why is it safer than an A/B test as a first step?
+2. Your drift monitor fires every morning but nothing is wrong. How do you debug it?
+3. Data drift vs concept drift: which one can PSI see, and how do you detect the other?
+4. Why monitor the score distribution and not just the inputs?
