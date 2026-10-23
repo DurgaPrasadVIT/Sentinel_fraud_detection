@@ -3,21 +3,24 @@
 Run from the project root:
     uvicorn sentinel.api:app --reload
 Then open http://127.0.0.1:8000/docs
+
+Card memory: set REDIS_URL (e.g. redis://localhost:6379/0) to keep it in Redis.
+Without it, memory lives inside this process and is lost on restart.
 """
 
 import time
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from pydantic import BaseModel, Field
 
 from sentinel.decisions import APPROVE, BLOCK, REVIEW, Policy
 from sentinel.explain import explain, load_model
-from sentinel.features import CardState, add_simple_features
+from sentinel.features import add_simple_features
+from sentinel.store import make_store
 from sentinel.train import FEATURES
 
 POLICY = Policy(review_line=0.02, block_line=0.69)
@@ -53,9 +56,9 @@ state = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Runs once when the server starts: load the model ONE time."""
+    """Runs once when the server starts: load the model and connect to card memory."""
     state["model"] = load_model()
-    state["cards"] = defaultdict(CardState)  # card memory (moves to Redis later)
+    state["cards"] = make_store()
     yield
 
 
@@ -63,19 +66,24 @@ app = FastAPI(title="Sentinel fraud scoring", lifespan=lifespan)
 
 
 @app.get("/health")
-def health() -> dict:
-    """Lets Kubernetes (later) check the API is alive."""
-    return {"status": "ok"}
+def health(response: Response) -> dict:
+    """Lets Kubernetes (later) check the API and its card memory are alive."""
+    store = state["cards"]
+    try:
+        store_ok = store.ping()
+    except Exception:  # Redis down or unreachable
+        store_ok = False
+    if not store_ok:
+        response.status_code = 503  # "not ready": send traffic elsewhere
+    return {"status": "ok" if store_ok else "degraded", "store": type(store).__name__}
 
 
 @app.post("/score", response_model=Decision)
 def score(payment: Payment) -> Decision:
     start = time.perf_counter()
-    card = state["cards"][payment.card_id]
-
     row = payment.model_dump()
-    row.update(card.features(payment.ts, payment.amount))  # 1. clues from the past
-    card.update(payment.ts, payment.amount)                # 2. remember this payment
+    # Clues from the card's past, then remember this payment (one atomic step in Redis).
+    row.update(state["cards"].features_and_update(payment.card_id, payment.ts, payment.amount))
 
     df = add_simple_features(pd.DataFrame([row]))
     df["category"] = pd.Categorical(df["category"])
