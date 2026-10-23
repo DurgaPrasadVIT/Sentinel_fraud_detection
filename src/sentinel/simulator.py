@@ -6,7 +6,7 @@ what the system caught, because the simulator knows the true labels.
 
 Run from the project root (API must be running):
     python -m sentinel.simulator --rate 50 --limit 3000 --attack
-    python -m sentinel.simulator --rate 50 --limit 3000 --warmup-days 3 --attack --rings 5
+    python -m sentinel.simulator --rate 50 --limit 3000 --attack --rings 5
 """
 
 import argparse
@@ -22,6 +22,11 @@ import numpy as np
 import pandas as pd
 
 from sentinel.data import PROCESSED_DIR
+from sentinel.features import WINDOWS
+
+# Backfill at least the longest history window (7 days), otherwise live cards look "younger"
+# than in training: count_7d / sum_7d come out too small and the drift monitor rightly alerts.
+FULL_HISTORY_DAYS = max(WINDOWS.values()).days
 
 PAYMENT_FIELDS = [
     "txn_id", "card_id", "ts", "amount", "category", "age", "city_pop",
@@ -328,7 +333,7 @@ def main() -> None:
     parser.add_argument("--url", default="http://127.0.0.1:8000/score")
     parser.add_argument("--rate", type=float, default=50, help="payments per second (measured part)")
     parser.add_argument("--limit", type=int, default=2000, help="payments to measure")
-    parser.add_argument("--warmup-days", type=int, default=0,
+    parser.add_argument("--warmup-days", type=int, default=FULL_HISTORY_DAYS,
                         help="replay this many days first to build card history (not measured)")
     parser.add_argument("--attack", action="store_true", help="inject a card-testing attack every 500 payments")
     parser.add_argument("--rings", type=int, default=0, help="inject this many money-mule rings")
@@ -337,6 +342,9 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
+    if 0 < args.warmup_days < FULL_HISTORY_DAYS:
+        print(f"Note: warm-up shorter than {FULL_HISTORY_DAYS} days, so 7-day clues start too small "
+              "and the drift monitor will flag count_7d / sum_7d.")
     stream = load_stream(args.limit, args.warmup_days, 500 if args.attack else 0, args.rings,
                          drift=args.drift)
     run(args.url, stream, args.rate, args.workers)

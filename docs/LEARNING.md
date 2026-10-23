@@ -173,7 +173,8 @@ analysis over hours), not card authorisation.
   second; each payment takes one; empty bucket = wait. Allows small bursts.
 - **One card always goes through the same worker thread** (`card_id % workers`), so
   a card's payments arrive in order and its Redis history stays correct.
-- **Warm-up** (`--warmup-days`): first replays a few days to build card history.
+- **Warm-up** (`--warmup-days`, default 7): first replays a week to build card history, so the 7-day
+  clues look like they did in training (a real launch backfills the feature store the same way).
   Without it every card starts "brand new" and scores look worse than reality
   (the cold-start problem).
 - **`--attack`** injects a stolen-card pattern every 500 payments: two big online
@@ -200,7 +201,7 @@ $env:KAFKA_BOOTSTRAP = "localhost:9092"
 uvicorn sentinel.api:app
 ```
 Second terminal: `python -m sentinel.monitor`
-Third terminal: `python -m sentinel.simulator --rate 50 --limit 3000 --warmup-days 3 --attack`
+Third terminal: `python -m sentinel.simulator --rate 50 --limit 3000 --attack`
 
 ### Likely interview questions
 1. Why is Kafka after the API and not in front of it?
@@ -457,7 +458,7 @@ uvicorn sentinel.api:app --log-level warning      # with REDIS_URL and KAFKA_BOO
 python -m sentinel.rings
 python -m sentinel.cases
 streamlit run src/sentinel/dashboard.py
-python -m sentinel.simulator --rate 50 --limit 5000 --warmup-days 3 --attack --rings 5
+python -m sentinel.simulator --rate 50 --limit 5000 --attack --rings 5
 ```
 
 ### Likely interview questions
@@ -603,7 +604,7 @@ Clue drift says "the inputs changed". Score drift says "the model now behaves di
 is what the business feels (review queue size). Under the drift test the champion's review/block
 count went from **19 to 264** per 5,000 payments; the score PSI was the loudest alarm (1.04).
 
-### Three false alarms we had to fix first
+### Four false alarms we had to fix first
 On normal traffic the first version alerted on clues that had not really changed:
 
 | Alarm | Root cause | Fix |
@@ -611,6 +612,7 @@ On normal traffic the first version alerted on clues that had not really changed
 | `sum_1h` | The sliding window subtracted floats; an empty window kept tiny leftovers like 1e-13 instead of 0, so live values fell in a different bucket than training. | Reset the total to exactly 0 when the window empties (test added). Retrained, now model v2. |
 | `model_score` | Events carried the score rounded to 4 digits, which moved many scores across bucket edges near 0. | Publish the full-precision score. |
 | `day_of_week`, `hour` | A few hours of traffic can't contain every weekday, so PSI is "high" by construction. | Skip cyclic clues until the window covers a full cycle (`skipped (window too short)`). |
+| `count_7d`, `sum_7d` | The demo replayed only 3 days of history before going live, so cards had at most 3 days of memory while training cards had months. A real gap between training and serving, not a data change. | Backfill at least the longest window: warm-up now defaults to 7 days (PSI 0.69 -> 0.07 for `count_7d`, 0.43 -> 0.04 for `sum_7d`). |
 
 Lesson: a drift alarm is only useful if it is quiet on normal traffic. Check it on a no-drift run
 before trusting it.
@@ -621,7 +623,7 @@ within seed-to-seed noise, i.e. the fix didn't hurt the model. Both versions are
 ### Results on the simulator
 | Run | Drift alerts | Notes |
 |---|---|---|
-| Normal traffic | 0 | 4 "watch" on history clues (`count_7d`, `sum_24h`...): live cards start with little memory |
+| Normal traffic, 7-day backfill | 0 | 3-day backfill gave 2 alerts (`count_7d`, `sum_7d`), see table above |
 | `--drift` (amounts x2.5, 40% moved to online shopping) | 5-6 | amount, category, amount_vs_avg, model_score, sum_24h |
 | Shadow agreement, normal traffic | 94.6% | the challenger flags many more payments (it lost offline, see above) |
 
@@ -630,7 +632,7 @@ within seed-to-seed noise, i.e. the fix didn't hurt the model. Both versions are
 docker compose --profile app up -d --build
 docker compose exec redis redis-cli FLUSHALL
 docker compose --profile demo run --rm simulator
-docker compose --profile demo run --rm simulator python -m sentinel.simulator --url http://api:8000/score --rate 50 --limit 3000 --warmup-days 3 --drift
+docker compose --profile demo run --rm simulator python -m sentinel.simulator --url http://api:8000/score --rate 50 --limit 3000 --drift
 ```
 Open the dashboard and look at **Model health**.
 
