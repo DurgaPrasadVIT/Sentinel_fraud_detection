@@ -36,4 +36,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
-CMD ["uvicorn", "sentinel.api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# One process per container; scale by running more containers (replicas).
+# Also avoids a ~40 ms delay per request: with --workers > 1, uvicorn creates the
+# listening socket without proto=IPPROTO_TCP, so asyncio never enables TCP_NODELAY,
+# and on reused connections Nagle's algorithm + delayed ACK add ~40 ms (docs/PERFORMANCE.md).
+CMD ["uvicorn", "sentinel.api:app", "--host", "0.0.0.0", "--port", "8000"]
