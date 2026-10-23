@@ -11,3 +11,7 @@ ipykernel
 
 # Testing
 pytest
+
+# Modeling
+lightgbm
+scikit-learn
