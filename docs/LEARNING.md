@@ -94,3 +94,41 @@ another payment for the same card: the history is still there. Peek inside Redis
 docker exec -it sentinel-redis redis-cli HGETALL card:4242:stats
 docker exec -it sentinel-redis redis-cli ZRANGE card:4242:recent 0 -1 WITHSCORES
 ```
+
+---
+
+## Input validation (`Payment` in `src/sentinel/api.py`)
+
+### The bugs a manual test found
+Sending our own made-up payment to `/docs` exposed two problems:
+
+1. **Unknown categories were silently accepted.** `"electronic"` is not one of the
+   14 categories the model was trained on. The model treated it as "missing" and
+   still returned a score: a confident-looking answer built on a guess.
+2. **Mixing timezones crashed the API.** `"...T21:00:00Z"` (with timezone) followed by
+   `"...T21:05:00"` (without) for the same card raised a `TypeError` (HTTP 500),
+   because Python can't compare the two kinds of datetime.
+
+### The fixes
+- `category` is now a `Literal` of the 14 known values, so anything else returns **422**
+  with a clear message. A test checks this list matches the categories saved in the model
+  file, so a retrain with new categories can't silently break it.
+- Every timestamp is converted to **UTC with no timezone label**, the same format as the
+  training data. A New York 21:00 payment becomes 02:00 UTC the next day.
+- Latitude and longitude must be on Earth (-90..90, -180..180).
+- The `/docs` page now shows a realistic example instead of zeros.
+
+### Lesson
+**Fail loudly on bad input.** A 422 error is annoying; a wrong fraud score that nobody
+notices is dangerous. Validate at the edge of the system, before data reaches the model.
+
+### About latency
+The very first request after starting the server is slower (~60-100 ms): libraries warm
+up on first use. After that: **p50 ≈ 10 ms, p99 ≈ 19 ms** (400 requests, in-memory store).
+"p99" = 99% of requests are faster than this. Seniors quote p99, not the average, because
+the slowest requests are the ones customers complain about.
+
+### Likely interview questions
+1. What happens if a client sends a category your model has never seen?
+2. How do you handle timezones in a payments system? *(Store UTC everywhere.)*
+3. Why do you report p99 latency instead of the average?
