@@ -210,3 +210,33 @@ Third terminal: `python -m sentinel.simulator --rate 50 --limit 3000 --warmup-da
 4. At-least-once vs exactly-once: what do `acks=all` and idempotence give you?
 5. How does a consumer resume after a crash? *(Committed offsets per consumer group.)*
 6. Why did live results differ from offline results? *(Cold start: less card history.)*
+
+---
+
+## Load testing and the fast scoring path (`scoring.py`, `loadtest/`, `docs/PERFORMANCE.md`)
+
+### What we did
+1. **Measured first.** A load test with Locust: 50 simulated terminals sending payments
+   non-stop. Result: 107 req/s, p99 680 ms. Far from the 50 ms target.
+2. **Profiled** one payment step by step. 99% of the time was pandas overhead on a
+   1-row table; the model itself needs 0.02 ms.
+3. **Fixed** with a NumPy fast path, and **proved it gives identical results** on 3,000
+   real payments.
+4. **Measured again:** ~10x throughput (1,126 req/s) and p99 10 ms at moderate load.
+
+### Lessons
+- **Never optimise without measuring.** The guess "the model is slow" was wrong: the model
+  was the fastest part.
+- **Tools have a sweet spot.** pandas is fast for a million rows and slow for one.
+- **A speed-up is only valid if results stay identical.** The parity test is what makes this
+  change safe.
+- **Latency under load = work + waiting in line.** Once the work is fast, more processes or
+  machines reduce the waiting. Multiple processes need shared state (Redis).
+
+### Likely interview questions
+1. How did you find the bottleneck? *(Load test, then timing each step.)*
+2. Why was pandas slow here? *(Per-call overhead dominates for 1 row.)*
+3. How do you know the optimisation didn't change model behaviour? *(Parity test.)*
+4. What's the difference between throughput and latency? Why do both matter?
+5. How would you scale to 10,000 payments/s? *(More processes and API copies, shared Redis,
+   partitioned Kafka, maybe a compiled model runtime such as ONNX or Treelite.)*

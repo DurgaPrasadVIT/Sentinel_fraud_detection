@@ -4,13 +4,12 @@ Run from the project root:
     python -m sentinel.explain
 """
 
-import heapq
-
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
 from sentinel.features import FEATURES_DIR
+from sentinel.scoring import top_reasons
 from sentinel.train import FEATURES, MODELS_DIR
 
 BLOCK_LINE = 0.69  # from the money-based policy
@@ -25,11 +24,7 @@ def explain(booster: lgb.Booster, rows: pd.DataFrame, top_n: int = 3) -> list[li
     """For each row, the clues that pushed its score UP the most."""
     # One SHAP value per clue, plus a last column with the base value (we drop it).
     contrib = booster.predict(rows[FEATURES], pred_contrib=True)[:, :-1]
-    reasons = []
-    for row in contrib:
-        top = heapq.nlargest(top_n, range(len(FEATURES)), key=lambda i: row[i])
-        reasons.append([(FEATURES[i], float(row[i])) for i in top if row[i] > 0])
-    return reasons
+    return [top_reasons(row, top_n) for row in contrib]
 
 
 def fmt(value) -> str:

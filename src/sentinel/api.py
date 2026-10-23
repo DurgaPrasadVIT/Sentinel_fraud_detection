@@ -18,16 +18,14 @@ from datetime import datetime, timezone
 from typing import Literal, get_args
 
 import numpy as np
-import pandas as pd
 from fastapi import FastAPI, Response
 from pydantic import BaseModel, Field, field_validator
 
 from sentinel.decisions import APPROVE, BLOCK, REVIEW, Policy
 from sentinel.events import make_publisher, utc_now
-from sentinel.explain import explain, load_model
-from sentinel.features import add_simple_features
+from sentinel.explain import load_model
+from sentinel.scoring import Scorer
 from sentinel.store import make_store
-from sentinel.train import FEATURES
 
 POLICY = Policy(review_line=0.02, block_line=0.69)
 LABELS = {APPROVE: "approve", REVIEW: "review", BLOCK: "block"}
@@ -101,7 +99,7 @@ state = {}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Runs once when the server starts: load the model and connect to card memory."""
-    state["model"] = load_model()
+    state["scorer"] = Scorer(load_model(), CATEGORIES)
     state["cards"] = make_store()
     state["events"] = make_publisher()
     yield
@@ -129,15 +127,13 @@ def score(payment: Payment) -> Decision:
     start = time.perf_counter()
     row = payment.model_dump()
     # Clues from the card's past, then remember this payment (one atomic step in Redis).
-    row.update(state["cards"].features_and_update(payment.card_id, payment.ts, payment.amount))
+    history = state["cards"].features_and_update(payment.card_id, payment.ts, payment.amount)
 
-    df = add_simple_features(pd.DataFrame([row]))
-    df["category"] = pd.Categorical(df["category"], categories=CATEGORIES)
-
-    model = state["model"]
-    fraud_score = float(model.predict(df[FEATURES])[0])
+    scorer = state["scorer"]
+    x = scorer.vector(row, history)
+    fraud_score = scorer.score(x)
     decision = int(POLICY.decide(np.array([fraud_score]))[0])
-    reasons = [] if decision == APPROVE else [name for name, _ in explain(model, df)[0]]
+    reasons = [] if decision == APPROVE else scorer.reasons(x)
 
     result = Decision(
         txn_id=payment.txn_id or uuid.uuid4().hex,
