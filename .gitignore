@@ -222,3 +222,8 @@ __marimo__/
 /data/
 *.parquet
 /models/
+
+# MLflow (local tracking database and run files)
+mlflow.db
+mlruns/
+mlartifacts/

@@ -99,7 +99,15 @@ then holds back the second part of each response (Nagle's algorithm) until the c
 the first, and the client delays that acknowledgement by ~40 ms ("delayed ACK"). New connections
 escape it because TCP acknowledges immediately at the start of a connection.
 
-**Fix.** One uvicorn process per container; scale with more containers (replicas). This is also the
+**Fix.** One uvicorn process per container; scale with more containers (replicas).
+
+**After the fix** (Docker on the laptop, same probe):
+
+| | Before | After |
+|---|---|---|
+| API's own processing time, p50 | 1.3 ms | 0.9 ms |
+| Round trip, reused connection, p50 | 44.0 ms | **2.3 ms** |
+| Round trip, reused connection, p99 | 52.1 ms | **3.6 ms** | This is also the
 usual container practice: one process, one health check, the orchestrator handles scaling.
 
 **Lessons.** A *constant* extra delay (here ~40 ms whatever the load) points at protocol timing, not

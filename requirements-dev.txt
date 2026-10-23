@@ -16,3 +16,6 @@ locust==2.47.0
 # Notebooks and charts
 ipykernel==7.4.0
 matplotlib==3.11.2
+
+# Experiment tracking and model registry
+mlflow==3.17.2

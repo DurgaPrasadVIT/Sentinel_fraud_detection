@@ -5,7 +5,7 @@
 # Data
 pandas==3.1.0
 numpy==2.4.6
-pyarrow==26.0.0
+pyarrow==25.0.1   # mlflow 3.17 requires pyarrow<26
 
 # Model
 lightgbm==4.7.0

@@ -287,7 +287,7 @@ file**, and the API refuses to start if the policy belongs to another model.
 ### After every retrain
 ```
 python -m sentinel.features   # rebuild clues
-python -m sentinel.train      # train and save the model
+python -m sentinel.train      # train, save, log to MLflow, register a new version
 python -m sentinel.decisions  # re-choose approve/review/block lines, saved with the model
 ```
 
@@ -528,3 +528,58 @@ API: http://localhost:8000/docs, dashboard: http://localhost:8501
 3. Why pin exact versions? What's the downside? *(Must update deliberately; use a bot like
    Dependabot.)*
 4. Why does Kafka need two listeners in Docker?
+
+---
+
+## MLflow, model registry and the challenger (`tracking.py`, `train.py`, `challenger.py`)
+
+### Experiment tracking
+Every training run logs to MLflow: settings, train/valid/test sizes, a **fingerprint of the
+training data**, metrics (PR-AUC, ROC-AUC), the **business result** (money lost, fraud stopped, good
+customers blocked, logged by `decisions.py` into the same run), the model file, the policy and the
+drift reference. The model is registered as `sentinel-fraud` with a version number.
+So for the model in production you can answer: *which data, which settings, how good, since when.*
+
+Reproducibility check: retraining with the same data and seed produced a **byte-identical** model.
+
+```
+python -m sentinel.train        # trains, logs, registers a new version
+python -m sentinel.decisions    # picks lines, logs money result into the same run
+mlflow ui --backend-store-uri sqlite:///mlflow.db    # browse runs at http://127.0.0.1:5000
+```
+
+### Champion vs challenger
+The **champion** is the live model (LightGBM, learned from labels). A **challenger** is a candidate
+evaluated on exactly the same test period and money metric before it's ever trusted.
+
+Challenger tried: **Isolation Forest**, unsupervised anomaly detection (no labels needed: useful
+because labels arrive weeks late and new fraud patterns have none).
+
+| | Champion (LightGBM) | Challenger (Isolation Forest) |
+|---|---|---|
+| PR-AUC | **0.970** | 0.240 |
+| Money lost, 6 months | **$18,342** | $397,947 |
+| Good customers blocked | **35** | 10,667 |
+| Reviews per day | 4 | 98 (limit 50) |
+
+**Decision: not promoted.** Reasons:
+- "Unusual" is not "fraud": most unusual payments are innocent (a big gift, a trip).
+- Without labels it can't learn which unusual things matter.
+- Its review volume broke the team's limit on the test period although the lines respected it on
+  validation: anomaly scores shift as traffic changes, so unsupervised detectors need recalibration.
+- With 17 clues, one extreme value only partly isolates a payment (each tree splits on random clues).
+
+Better use of it (next step): add the anomaly score as an **extra clue** to the champion, or use it
+to surface new patterns for analysts to label.
+
+### Drift reference
+Training also saves `models/reference.json`: deciles of every clue and of the model's scores on the
+validation period (the most recent data before go-live). The live drift monitor compares recent
+traffic to it with PSI (`drift.py`).
+
+### Likely interview questions
+1. How do you know which data and code produced the model in production?
+2. How do you decide whether a new model replaces the current one? *(Same test data, same business
+   metric, then shadow mode on live traffic, then a gradual rollout / A/B test.)*
+3. When would you use unsupervised anomaly detection in fraud, and why did it lose here?
+4. What is PSI and what thresholds do teams use?
