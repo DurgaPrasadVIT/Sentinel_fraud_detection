@@ -365,6 +365,40 @@ no coordinated timing beyond normal night-time fraud). So the simulator:
 
 ---
 
+### Live bug: two copies of the ring detector (and how it was found)
+**Symptom.** The simulator injected 5 rings and its own offline check found all 5, but the live
+service raised only 1 ring alert per run, every run.
+
+**Debugging, step by step** (each step ruled one cause out):
+1. Detector logic: replayed the same payments offline, in time order and shuffled 6 ways -> always
+   5/5 rings, 0 innocent cards. Not the algorithm, not the arrival order.
+2. Crash? `docker compose ps` / logs: the service was up the whole time, no errors.
+3. Lost on the way in? Read the whole `decisions` topic with a throwaway consumer: every ring
+   payment was there, all with a device. No API drops (`logs api` had no Kafka warnings).
+4. Behind? `kafka-consumer-groups.sh --describe`: LAG 0 everywhere, **but the `sentinel-rings` group
+   had two members**: the Docker service (partitions 3-5) and `172.19.0.1`, i.e. the laptop itself,
+   where `python -m sentinel.rings` was still running in an old terminal (partitions 0-2).
+
+**Root cause.** A consumer group splits partitions between its members. That is right for
+stateless or per-card work (cases, drift), but ring detection needs the whole card-device graph.
+Events are keyed by card, so each copy saw about half of every ring's cards and none reached 5.
+
+**Fix.** Stop the stray copy, and make the service check its assignment on every rebalance: it now
+prints `Reading all 6 partitions` or an `ERROR ... reads 3 of 6 partitions` message
+(`coverage_problem`, with a test that shows a split ring being missed).
+
+**At real scale** one process can't hold the whole graph; teams keep it in a shared store (a graph
+database, or Redis keyed by device) or partition by connected component, not by card.
+
+A side finding while checking counts: the dashboard showed ~9,400 new payments for a ~23,000-event
+run. Not a loss: the 7-day warm-up re-sent the previous run's payments with the same `txn_id`, and
+the case store's `INSERT OR IGNORE` (idempotent writes for Kafka's at-least-once delivery) kept one copy.
+
+### Likely interview questions (ring service)
+1. When is it wrong to scale a Kafka consumer by adding copies to its group?
+2. How would you find connected components when the graph doesn't fit on one machine?
+3. Walk me through debugging "the alert fires in testing but not in production".
+
 ## AI case notes (`casenotes.py`, `cases.py`)
 
 ### What it does
