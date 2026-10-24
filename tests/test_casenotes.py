@@ -1,7 +1,16 @@
 """Tests for sentinel.casenotes and sentinel.cases."""
 
-from sentinel.casenotes import Facts, TemplateWriter, check_note, mask_card, template_note, write_note
-from sentinel.cases import CaseService, CaseStore
+from sentinel.casenotes import (
+    Facts,
+    TemplateWriter,
+    card_key,
+    check_note,
+    mask_card,
+    risk_text,
+    template_note,
+    write_note,
+)
+from sentinel.cases import CaseService, CaseStore, prepare
 
 EVENT = {
     "txn_id": "t1", "card_id": 4532015112830366, "ts": "2020-12-21T23:51:00",
@@ -93,3 +102,53 @@ def test_notes_never_cite_who_the_cardholder_is():
              "clues": {"amount": 850.0, "age": 61, "city_pop": 5000}}
     lines = "\n".join(Facts.from_event(event).lines())
     assert "age" not in lines.lower() and "5,000" not in lines
+
+
+def test_risk_is_never_shown_as_100_or_0_percent():
+    assert risk_text(0.99996) == ">99.9%"
+    assert risk_text(0.9731) == "97.3%"
+    assert risk_text(0.00002) == "<0.1%"
+    assert "risk >99.9%" in template_note(Facts.from_event({**EVENT, "score": 0.99996}))
+
+
+def test_card_key_groups_a_card_without_revealing_it():
+    key = card_key(4532015112830366)
+    assert key == card_key("4532015112830366") and len(key) == 16
+    assert key != card_key(4532015112830367) and "0366" not in key
+
+
+def test_note_mentions_earlier_flags_and_passes_the_guard():
+    facts = Facts.from_event(EVENT, earlier=(2, 1464.99))
+    note = template_note(facts)
+    assert "2 other flagged payments on this card in the previous 24 hours ($1,464.99 in total)" in note
+    assert check_note(note, facts) == []
+    assert "Card history" not in template_note(Facts.from_event(EVENT))
+
+
+def test_service_counts_only_earlier_flags_of_the_same_card_in_24h():
+    service = CaseService(CaseStore(":memory:"), TemplateWriter())
+
+    def flag(txn, card, ts, amount, decision="block"):
+        e = {**EVENT, "txn_id": txn, "card_id": card, "ts": ts, "amount": amount, "decision": decision}
+        return service.earlier_flags(e) if decision != "approve" else None
+
+    assert flag("a", 1, "2020-06-23T01:00:00", 500.0) == (0, 0.0)
+    flag("b", 2, "2020-06-24T02:00:00", 99.0)                     # another card
+    assert flag("c", 1, "2020-06-24T02:00:00", 741.77) == (0, 0.0)  # "a" is >24h old
+    assert flag("d", 1, "2020-06-24T03:33:40", 7.82) == (1, 741.77)
+    assert flag("d", 1, "2020-06-24T03:33:40", 7.82) == (1, 741.77)  # redelivery: not counted twice
+    assert flag("e", 1, "2020-06-24T04:00:00", 5.0) == (2, 749.59)
+
+
+def test_old_database_gets_the_new_column_and_keeps_its_rows():
+    import sqlite3
+
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE cases (txn_id TEXT PRIMARY KEY, ts TEXT, card TEXT, amount REAL, category TEXT, "
+               "decision TEXT, score REAL, reasons TEXT, note TEXT, note_source TEXT, note_rejected TEXT, "
+               "status TEXT DEFAULT 'open', created_at TEXT)")
+    db.execute("INSERT INTO cases (txn_id) VALUES ('old')")
+    prepare(db)
+    prepare(db)  # running it again is harmless
+    assert "card_key" in {r[1] for r in db.execute("PRAGMA table_info(cases)")}
+    assert db.execute("SELECT txn_id, card_key FROM cases").fetchall() == [("old", None)]

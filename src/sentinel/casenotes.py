@@ -15,6 +15,8 @@ Choose the writer with SENTINEL_LLM = template (default) | ollama | anthropic | 
 and SENTINEL_LLM_MODEL (e.g. llama3.1:8b for Ollama).
 """
 
+import hashlib
+import hmac
 import os
 import re
 from dataclasses import dataclass
@@ -30,6 +32,25 @@ def mask_card(card_id) -> str:
 
 def money(x: float) -> str:
     return f"${x:,.2f}"
+
+
+# Key for grouping payments by card without storing the card number: a keyed hash
+# (HMAC), so it can't be reversed by hashing every possible card number. The secret
+# comes from the environment; the default is only for local runs.
+CARD_KEY_SECRET = os.getenv("SENTINEL_CARD_KEY_SECRET", "local-dev-only").encode()
+
+
+def card_key(card_id) -> str:
+    return hmac.new(CARD_KEY_SECRET, str(card_id).encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def risk_text(score: float) -> str:
+    """A model is never 100% sure; don't let rounding say so."""
+    if score >= 0.999:
+        return ">99.9%"
+    if score < 0.001:
+        return "<0.1%"
+    return f"{score * 100:.1f}%"
 
 
 # Clues about WHO the cardholder is, not WHAT happened. The model uses them, but showing
@@ -74,9 +95,14 @@ class Facts:
     category: str
     when: str
     reasons: list[str]
+    risk: str = ""
+    # Other review/block decisions on this card in the 24 hours BEFORE this payment.
+    # Only the past: the note is written now and must not know what happens later.
+    earlier_flags: int = 0
+    earlier_flags_amount: float = 0.0
 
     @classmethod
-    def from_event(cls, event: dict) -> "Facts":
+    def from_event(cls, event: dict, earlier: tuple[int, float] = (0, 0.0)) -> "Facts":
         clues = event.get("clues") or {}
         reasons = []
         for name in event.get("reasons", []):
@@ -88,14 +114,24 @@ class Facts:
         when = datetime.fromisoformat(str(event["ts"])).strftime("%Y-%m-%d %H:%M")
         return cls(card=mask_card(event["card_id"]), decision=event["decision"],
                    risk_pct=round(event["score"] * 100, 1), amount=float(event["amount"]),
-                   category=str(event["category"]), when=when, reasons=reasons)
+                   category=str(event["category"]), when=when, reasons=reasons,
+                   risk=risk_text(event["score"]), earlier_flags=earlier[0],
+                   earlier_flags_amount=round(earlier[1], 2))
+
+    def card_history(self) -> str | None:
+        if not self.earlier_flags:
+            return None
+        payments = "payment" if self.earlier_flags == 1 else "payments"
+        return (f"{self.earlier_flags} other flagged {payments} on this card in the previous 24 hours "
+                f"({money(self.earlier_flags_amount)} in total)")
 
     def lines(self) -> list[str]:
         return [
             f"Card: {self.card}",
-            f"Decision: {self.decision} (model risk {self.risk_pct}%)",
+            f"Decision: {self.decision} (model risk {self.risk or f'{self.risk_pct}%'})",
             f"Payment: {money(self.amount)}, category {self.category}, at {self.when}",
             *[f"Reason: {r}" for r in self.reasons],
+            *([f"Card history: {h}"] if (h := self.card_history()) else []),
         ]
 
 
@@ -108,8 +144,10 @@ NEXT_STEP = {
 def template_note(f: Facts) -> str:
     """Plain, reliable note. No AI involved."""
     reasons = "; ".join(f.reasons) if f.reasons else "overall pattern scored as risky"
-    return (f"{f.decision.upper()} (risk {f.risk_pct}%): {money(f.amount)} {f.category} on card "
-            f"{f.card} at {f.when}. Why: {reasons}. Next step: {NEXT_STEP.get(f.decision, '')}")
+    history = f" Card history: {h}." if (h := f.card_history()) else ""
+    return (f"{f.decision.upper()} (risk {f.risk or f'{f.risk_pct}%'}): {money(f.amount)} {f.category} "
+            f"on card {f.card} at {f.when}. Why: {reasons}.{history} "
+            f"Next step: {NEXT_STEP.get(f.decision, '')}")
 
 
 # ---------- Hallucination guard ----------
@@ -291,9 +329,9 @@ class Note:
     rejected: list[str]    # why an LLM note was rejected (empty if accepted or template)
 
 
-def write_note(event: dict, writer: Writer) -> Note:
+def write_note(event: dict, writer: Writer, earlier: tuple[int, float] = (0, 0.0)) -> Note:
     """LLM note if it's safe, otherwise the template note. Never raises."""
-    facts = Facts.from_event(event)
+    facts = Facts.from_event(event, earlier)
     if isinstance(writer, TemplateWriter):
         return Note(template_note(facts), "template", [])
     try:

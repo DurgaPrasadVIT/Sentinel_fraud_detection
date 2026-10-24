@@ -4,7 +4,15 @@ import pytest
 
 from sentinel.casenotes import TemplateWriter
 from sentinel.cases import CaseService, CaseStore
-from sentinel.dashboard import label_stats, per_minute, review_queue, ring_alerts, set_status, summary
+from sentinel.dashboard import (
+    label_stats,
+    other_cases,
+    per_minute,
+    review_queue,
+    ring_alerts,
+    set_status,
+    summary,
+)
 
 
 def event(i, decision, score, amount=100.0):
@@ -93,3 +101,18 @@ def test_queue_appears_without_reloading_the_page(tmp_path, monkeypatch):
 
     at.run()  # what the 10 s timer triggers
     assert len(at.expander) == 1 and "BLOCK" in at.expander[0].label
+
+
+def test_other_cases_on_the_same_card_include_later_ones(tmp_path):
+    store = CaseStore(tmp_path / "cases.db")
+    service = CaseService(store, TemplateWriter())
+    card = 4111111111112620
+    for txn, ts, amount in [("early", "2020-06-24T03:33:40", 7.82), ("late1", "2020-06-24T22:07:11", 723.23),
+                            ("late2", "2020-06-24T23:15:28", 741.77)]:
+        service.handle("decisions", {**event(0, "block", 0.99, amount), "txn_id": txn, "card_id": card, "ts": ts})
+    service.handle("decisions", {**event(9, "block", 0.99), "card_id": 4999999999992620})  # same last 4 digits
+    service.flush(wait=True)
+    queue = review_queue(store.db).set_index("txn_id")
+    others = other_cases(store.db, queue.loc["early", "card_key"], "early")
+    assert list(others["amount"]) == [723.23, 741.77]  # later cases on this card; not the look-alike card
+    assert other_cases(store.db, None, "early").empty
