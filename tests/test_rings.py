@@ -1,6 +1,6 @@
 """Tests for sentinel.rings."""
 
-from sentinel.rings import RingDetector, UnionFind
+from sentinel.rings import RingDetector, UnionFind, coverage_problem
 
 
 def pay(card, device, amount=50.0, decision="approve"):
@@ -56,3 +56,21 @@ def test_alerts_once_per_ring_and_counts_model_stops():
 def test_payments_without_device_are_ignored():
     detector = RingDetector(min_cards=2)
     assert detector.add({"card_id": 1, "amount": 5.0}) is None
+
+
+def test_a_ring_split_across_two_detectors_is_missed():
+    # Why only one copy may run: events are partitioned by card, so two copies in one
+    # consumer group each see half of the ring's cards and neither reaches the limit.
+    ring = [{"card_id": c, "device_id": f"mule-{c % 2}", "amount": 50.0} for c in range(6)]
+    ring += [{"card_id": 0, "device_id": "mule-1", "amount": 50.0}]  # links the two devices
+    whole = RingDetector(min_cards=5)
+    assert [r for e in ring if (r := whole.add(e))]
+    halves = [RingDetector(min_cards=5), RingDetector(min_cards=5)]
+    alerts = [r for e in ring if (r := halves[e["card_id"] % 2].add(e))]
+    assert alerts == []
+
+
+def test_coverage_problem_flags_a_partial_assignment():
+    assert coverage_problem([0, 1, 2, 3, 4, 5], 6) is None
+    msg = coverage_problem([0, 1, 2], 6)
+    assert "3 of 6" in msg and "[3, 4, 5]" in msg

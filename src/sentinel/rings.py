@@ -12,6 +12,11 @@ Finding these groups = finding CONNECTED COMPONENTS, done with union-find.
 
 Run as a live service (reads the Kafka "decisions" topic):
     python -m sentinel.rings
+
+Run exactly ONE copy. Kafka splits a topic's partitions between the copies in a
+consumer group, and events are keyed by card, so a ring's cards land in different
+partitions. Two copies would each see half the graph and miss most rings. The
+service checks its partition assignment and logs an error if it only got a part.
 """
 
 import argparse
@@ -140,6 +145,19 @@ class RingDetector:
         return sorted(found, key=lambda r: -len(r.cards))
 
 
+def coverage_problem(assigned: list[int], total: int) -> str | None:
+    """None if this copy reads every partition, otherwise an error message.
+
+    The graph only works if one process sees every payment (see the module docstring).
+    """
+    missing = sorted(set(range(total)) - set(assigned))
+    if not missing:
+        return None
+    return (f"ERROR: this ring detector reads {len(set(assigned))} of {total} partitions "
+            f"(missing {missing}). Another copy is running in the same consumer group. "
+            "Rings need the whole card-device graph: stop the other copy, or rings will be missed.")
+
+
 def main() -> None:
     from confluent_kafka import Consumer, Producer
 
@@ -159,7 +177,13 @@ def main() -> None:
     consumer = Consumer({"bootstrap.servers": args.bootstrap, "group.id": "sentinel-rings",
                          "auto.offset.reset": "earliest" if args.from_start else "latest"})
     producer = Producer({"bootstrap.servers": args.bootstrap})
-    consumer.subscribe([DECISIONS_TOPIC])
+    total = len(consumer.list_topics(DECISIONS_TOPIC, timeout=10).topics[DECISIONS_TOPIC].partitions)
+
+    def on_assign(_consumer, partitions) -> None:
+        problem = coverage_problem([p.partition for p in partitions], total)
+        print(problem or f"Reading all {total} partitions of '{DECISIONS_TOPIC}'.", flush=True)
+
+    consumer.subscribe([DECISIONS_TOPIC], on_assign=on_assign)
     detector = RingDetector(min_cards=args.min_cards)
     print(f"Watching '{DECISIONS_TOPIC}' for rings of {args.min_cards}+ cards (Ctrl + C to stop)...")
     try:
