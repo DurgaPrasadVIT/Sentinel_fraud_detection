@@ -462,6 +462,23 @@ $env:SENTINEL_LLM = "ollama"; python -m sentinel.cases   # local LLM (install Ol
 
 ---
 
+### Card context in notes and in the queue
+An analyst looking at "BLOCK, $7.82 gas_transport at 03:33" saw no reason for it: the note only
+listed the payment's own clues. The real story was the card: two blocked $700+ payments the same
+night. A small payment next to big ones is the classic card-testing pattern.
+
+- **Note (written at decision time):** the case service keeps a deque per card of its recent
+  review/block decisions and adds "Card history: N other flagged payments on this card in the
+  previous 24 hours ($X in total)". Only the **past**: a note can't know about payments that haven't
+  happened yet. Kafka keys events by card, so one card's events arrive in order; redelivered events
+  are not counted twice.
+- **Dashboard (read later):** "Other cases on this card" lists every case on the card, before and
+  after, with its status. The case table has a `card_key` column for this: a keyed hash
+  (HMAC-SHA256, secret in `SENTINEL_CARD_KEY_SECRET`) because the last 4 digits are not unique and
+  the full card number must not be stored. Older databases get the column added on start (`prepare`).
+- **Risk display:** scores like 0.99997 showed as "100.0%". A model is never certain, so it now says
+  ">99.9%" (and "<0.1%" at the other end).
+
 ## Live operations dashboard (`dashboard.py`)
 
 ### What's on it

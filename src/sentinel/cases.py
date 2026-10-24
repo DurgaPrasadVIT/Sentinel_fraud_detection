@@ -16,10 +16,12 @@ import json
 import os
 import sqlite3
 import time
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from sentinel.casenotes import Writer, make_writer, mask_card, write_note
+from sentinel.casenotes import Writer, card_key, make_writer, mask_card, write_note
 
 CASES_DB = Path(os.getenv("SENTINEL_CASES_DB", "data/cases.db"))
 
@@ -32,7 +34,7 @@ CREATE INDEX IF NOT EXISTS decisions_scored_at ON decisions(scored_at);
 CREATE TABLE IF NOT EXISTS cases (
     txn_id TEXT PRIMARY KEY, ts TEXT, card TEXT, amount REAL, category TEXT,
     decision TEXT, score REAL, reasons TEXT, note TEXT, note_source TEXT,
-    note_rejected TEXT, status TEXT DEFAULT 'open', created_at TEXT
+    note_rejected TEXT, status TEXT DEFAULT 'open', created_at TEXT, card_key TEXT
 );
 CREATE TABLE IF NOT EXISTS rings (
     id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, cards TEXT, devices TEXT,
@@ -48,6 +50,17 @@ CREATE TABLE IF NOT EXISTS drift (
 """
 
 
+def prepare(db: sqlite3.Connection) -> None:
+    """Create the tables, and add columns that older databases don't have yet (data is kept).
+    Both the case service and the dashboard call this, whichever starts first."""
+    db.executescript(SCHEMA)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(cases)")}
+    if "card_key" not in columns:
+        db.execute("ALTER TABLE cases ADD COLUMN card_key TEXT")
+    db.execute("CREATE INDEX IF NOT EXISTS cases_card_key ON cases(card_key)")
+    db.commit()
+
+
 class CaseStore:
     """SQLite store. WAL mode lets the dashboard read while this service writes."""
 
@@ -56,7 +69,7 @@ class CaseStore:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.executescript(SCHEMA)
+        prepare(self.db)
 
     def add_decision(self, e: dict) -> None:
         # INSERT OR IGNORE: Kafka may deliver an event twice after a restart
@@ -70,10 +83,11 @@ class CaseStore:
     def add_case(self, e: dict, note) -> None:
         self.db.execute(
             "INSERT OR IGNORE INTO cases (txn_id, ts, card, amount, category, decision, score, "
-            "reasons, note, note_source, note_rejected, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "reasons, note, note_source, note_rejected, created_at, card_key) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (e["txn_id"], str(e["ts"]), mask_card(e["card_id"]), e["amount"], e["category"],
              e["decision"], e["score"], json.dumps(e.get("reasons", [])), note.text, note.source,
-             json.dumps(note.rejected), time.strftime("%Y-%m-%dT%H:%M:%S")),
+             json.dumps(note.rejected), time.strftime("%Y-%m-%dT%H:%M:%S"), card_key(e["card_id"])),
         )
 
     def add_ring(self, alert: dict) -> None:
@@ -95,6 +109,23 @@ class CaseService:
         self.store, self.writer = store, writer
         self.pool = ThreadPoolExecutor(workers)
         self.pending = []
+        # card -> (time, amount) of its recent review/block decisions, oldest first.
+        # Kafka keys events by card, so one card's events arrive in order.
+        self.flags: defaultdict[str, deque] = defaultdict(deque)
+        self.seen: set[str] = set()  # txn_ids already counted (Kafka may redeliver)
+
+    def earlier_flags(self, event: dict, window: timedelta = timedelta(hours=24)) -> tuple[int, float]:
+        """Count this card's flagged payments in the `window` before this one, then
+        remember this one. Old entries fall off the front of the deque."""
+        key, ts = str(event["card_id"]), datetime.fromisoformat(str(event["ts"]))
+        recent = self.flags[key]
+        while recent and recent[0][0] < ts - window:
+            recent.popleft()
+        earlier = [(t, a) for t, a in recent if t < ts]
+        if event["txn_id"] not in self.seen:
+            self.seen.add(event["txn_id"])
+            recent.append((ts, float(event["amount"])))
+        return len(earlier), sum(a for _, a in earlier)
 
     def handle(self, topic: str, event: dict) -> None:
         if topic == "ring-alerts":
@@ -102,7 +133,8 @@ class CaseService:
             return
         self.store.add_decision(event)
         if event["decision"] != "approve":
-            self.pending.append((event, self.pool.submit(write_note, event, self.writer)))
+            earlier = self.earlier_flags(event)
+            self.pending.append((event, self.pool.submit(write_note, event, self.writer, earlier)))
 
     def flush(self, wait: bool = False) -> int:
         """Save notes that are ready (all of them if wait=True). Returns how many."""

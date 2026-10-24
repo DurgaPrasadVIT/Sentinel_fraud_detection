@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from sentinel.cases import CASES_DB, SCHEMA
+from sentinel.casenotes import risk_text
+from sentinel.cases import CASES_DB, prepare
 
 STATUSES = {"open": "Open", "confirmed_fraud": "Confirmed fraud", "not_fraud": "Not fraud"}
 
@@ -22,7 +23,7 @@ STATUSES = {"open": "Open", "confirmed_fraud": "Confirmed fraud", "not_fraud": "
 def connect(path: Path | str = CASES_DB) -> sqlite3.Connection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)  # fresh machine: no data/ folder yet
     db = sqlite3.connect(str(path), check_same_thread=False, timeout=5)
-    db.executescript(SCHEMA)  # works even before the case service has started
+    prepare(db)  # works even before the case service has started
     return db
 
 
@@ -62,10 +63,22 @@ def per_minute(db: sqlite3.Connection, minutes: int = 30) -> pd.DataFrame:
 
 def review_queue(db: sqlite3.Connection, status: str = "open", limit: int = 50) -> pd.DataFrame:
     df = pd.read_sql(
-        "SELECT txn_id, ts, card, amount, category, decision, score, reasons, note, note_source "
+        "SELECT txn_id, ts, card, amount, category, decision, score, reasons, note, note_source, card_key "
         "FROM cases WHERE status = ? ORDER BY score DESC, ts DESC LIMIT ?",
         db, params=(status, limit))
     df["reasons"] = df["reasons"].map(lambda r: ", ".join(json.loads(r)))
+    df["ts"] = df["ts"].str.replace("T", " ")
+    return df
+
+
+def other_cases(db: sqlite3.Connection, key: str | None, txn_id: str) -> pd.DataFrame:
+    """Every other case on the same card, before AND after this one, in time order.
+    The note only knows the past; the analyst reviewing later should see everything."""
+    if not key:
+        return pd.DataFrame(columns=["ts", "decision", "amount", "category", "status"])
+    df = pd.read_sql(
+        "SELECT ts, decision, amount, category, status FROM cases "
+        "WHERE card_key = ? AND txn_id != ? ORDER BY ts", db, params=(key, txn_id))
     df["ts"] = df["ts"].str.replace("T", " ")
     return df
 
@@ -210,11 +223,18 @@ def app() -> None:
         if queue.empty:
             st.caption("No open cases yet. They appear here automatically.")
         for case in queue.head(15).itertuples():
-            title = plain(f"{case.decision.upper()}  |  risk {case.score:.1%}  |  ${case.amount:,.2f} "
+            title = plain(f"{case.decision.upper()}  |  risk {risk_text(case.score)}  |  ${case.amount:,.2f} "
                           f"{case.category}  |  card {case.card}  |  {case.ts}")
             with st.expander(title):
                 st.markdown(plain(case.note))
                 st.caption(f"Model reasons: {case.reasons}  |  note by: {case.note_source}")
+                others = other_cases(db, case.card_key, case.txn_id)
+                if not others.empty:
+                    st.markdown(f"**Other cases on this card ({len(others)})**")
+                    st.markdown("  \n".join(
+                        plain(f"{o.ts}  |  {o.decision.upper()}  |  ${o.amount:,.2f} {o.category}  |  "
+                              f"{STATUSES.get(o.status, o.status)}")
+                        for o in others.itertuples()))
                 a, b, _ = st.columns([1, 1, 4])
                 if a.button("Confirm fraud", key=f"f-{case.txn_id}"):
                     set_status(db, case.txn_id, "confirmed_fraud")
